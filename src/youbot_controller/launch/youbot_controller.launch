@@ -1,7 +1,7 @@
 <launch>
-    <!-- Запуск драйвера и ROS-обёртки (готовый launch из подмодуля) -->
+    <!-- Запуск драйвера реального робота -->
     <include file="$(find youbot_driver_ros_interface)/launch/youbot_driver.launch"/>
 
-    <!-- Запуск нашего управляющего узла -->
-    <node name="youbot_controller" pkg="youbot_controller" type="youbot_controller.py" output="screen"/>
+    <!-- Запуск общей части -->
+    <include file="$(find youbot_controller)/launch/youbot_controller_core.launch"/>
 </launch>

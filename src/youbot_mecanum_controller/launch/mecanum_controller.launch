@@ -1,0 +1,7 @@
+<launch>
+    <node name="mecanum_controller" pkg="youbot_mecanum_controller" type="mecanum_controller.py" output="screen">
+        <param name="wheel_radius" value="0.0475"/>
+        <param name="lx" value="0.228"/>
+        <param name="ly" value="0.158"/>
+    </node>
+</launch>

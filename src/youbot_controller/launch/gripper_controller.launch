@@ -1,0 +1,4 @@
+<launch>
+  <rosparam file="$(find youbot_controller)/config/gripper_controller.yaml" command="load"/>
+  <node name="gripper_controller_spawner" pkg="controller_manager" type="spawner" args="gripper_controller" output="screen"/>
+</launch>
