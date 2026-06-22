@@ -34,6 +34,9 @@
 
   <!-- velocity_controllers для колёс (наши) -->
   <rosparam file="$(find youbot_mecanum_controller)/config/velocity_controllers.yaml" command="load"/>
+  
+  <!-- Загрузка PID для gazebo_ros_control -->
+  <rosparam file="$(find youbot_mecanum_controller)/config/gazebo_pid_gains.yaml" command="load"/>
 
   <!-- Запуск контроллеров скорости колёс -->
   <node name="controller_spawner_wheels" pkg="controller_manager" type="spawner"

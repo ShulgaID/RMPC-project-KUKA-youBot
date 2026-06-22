@@ -1,0 +1,11 @@
+config
+build
+bin
+lib
+nbproject
+Doxyfile
+*~
+
+.autotools
+.cproject
+.project

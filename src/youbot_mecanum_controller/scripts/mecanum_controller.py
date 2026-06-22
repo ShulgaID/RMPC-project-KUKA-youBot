@@ -33,12 +33,17 @@ class MecanumController:
         self.pub_bl = rospy.Publisher('/wheel_joint_bl_velocity_controller/command', Float64, queue_size=10)
         self.pub_br = rospy.Publisher('/wheel_joint_br_velocity_controller/command', Float64, queue_size=10)
 
+        # Таймер для публикации одометрии (50 Гц)
+        self.odom_publish_timer = rospy.Timer(rospy.Duration(0.02), self.publish_odometry_timer)
+
         # Публикация одометрии
         self.odom_pub = rospy.Publisher('/odom', Odometry, queue_size=10)
         self.odom_broadcaster = tf.TransformBroadcaster()
 
+        # Таймер для публикации одометрии (50 Гц)
+        self.odom_publish_timer = rospy.Timer(rospy.Duration(0.02), self.publish_odometry_timer)
+
         rospy.loginfo("Mecanum Controller initialized")
-        self.rate = rospy.Rate(50)
 
     # Обработчик команд скорости
     def cmd_vel_callback(self, msg):
@@ -68,6 +73,8 @@ class MecanumController:
         self.pub_bl.publish(w_bl)
         self.pub_br.publish(w_br)
 
+        rospy.loginfo("Mecanum: cmd_vel received")
+
         # Обновление одометрии (вычисляется на основе скоростей)
         self.update_odometry(vx, vy, omega)
 
@@ -93,10 +100,11 @@ class MecanumController:
 
         # Нормализация угла
         self.theta = math.atan2(math.sin(self.theta), math.cos(self.theta))
-
-        # Публикация одометрии
-        self.publish_odometry()
     
+    # Публикует одометрию и трансформацию по таймеру (50 Гц)
+    def publish_odometry_timer(self, event):
+        self.publish_odometry()
+
     # Публикация одометрии и трансформации
     def publish_odometry(self):
         current_time = rospy.Time.now()
@@ -149,10 +157,8 @@ class MecanumController:
 
         self.odom_pub.publish(odom_msg)
 
-    # Основной цикл (spin, так как всё в callback)
     def run(self):
         rospy.spin()
-
 
 if __name__ == '__main__':
     try:

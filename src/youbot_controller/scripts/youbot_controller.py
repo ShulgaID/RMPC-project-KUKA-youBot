@@ -34,6 +34,7 @@ class YouBotControllerNode:
 
         # Инициализация планировщика траекторий (генерирует желаемое состояние)
         self.trajectory = TrajectoryPlanner()
+        self.trajectory_initialized = False
 
         # Инициализация контроллера (PID для базы, пропорциональный для руки)
         self.controller = Controller(
@@ -61,8 +62,23 @@ class YouBotControllerNode:
         self.base_y = msg.pose.pose.position.y
         orient = msg.pose.pose.orientation
         # Преобразуем кватернион в углы Эйлера (берём только рыскание)
+        orient = msg.pose.pose.orientation
         _, _, yaw = euler_from_quaternion([orient.x, orient.y, orient.z, orient.w])
         self.base_theta = yaw
+        rospy.loginfo("Odometry received: x=%.2f, y=%.2f", self.base_x, self.base_y)
+        # Инициализируем траекторию при первом получении одометрии
+        if not self.trajectory_initialized:
+            start_pose = (self.base_x, self.base_y, self.base_theta)
+            rospy.loginfo("Calling init_mission...")
+            try:
+                self.trajectory.init_mission(start_pose)
+            except Exception as e:
+                rospy.logerr("Exception in init_mission: %s", e)
+                return
+        self.trajectory_initialized = True
+        rospy.loginfo("Mission initialized successfully.")
+        # Логирование
+        rospy.loginfo("Odometry received: x=%.2f, y=%.2f", self.base_x, self.base_y)
 
     # Callback для состояния суставов: обновляет текущие углы
     def joint_states_callback(self, msg):
@@ -76,6 +92,8 @@ class YouBotControllerNode:
     # Отправка управляющих команд
     # Отправляет команду скорости для мобильной платформы
     def send_base_command(self, vx, vy, omega):
+        rospy.loginfo_throttle(1, 
+            f"send_base_command called with vx={vx:.2f}, vy={vy:.2f}, omega={omega:.2f}")
         twist = Twist()
         twist.linear.x = vx
         twist.linear.y = vy
@@ -113,6 +131,18 @@ class YouBotControllerNode:
             # 1. Текущее время от начала миссии (сек)
             t = rospy.Time.now().to_sec() - start_time
 
+            while not rospy.is_shutdown():
+            # Ждём, пока траектория не будет инициализирована
+                if not self.trajectory_initialized:
+                    rospy.loginfo_throttle(2, "Ждём инициализации траектории...")
+                    rospy.sleep(0.1)
+                    continue
+                t = rospy.Time.now().to_sec() - start_time
+                desired = self.trajectory.get_desired_state(t)
+                rospy.loginfo_throttle(1, f"Time: {t:.2f}, State: {self.trajectory.current_phase}, "
+                         f"Goal: ({desired['x']:.2f}, {desired['y']:.2f}), "
+                         f"Curr: ({self.base_x:.2f}, {self.base_y:.2f})")
+
             # 2. Получить желаемое состояние (база, рука, схват) от планировщика
             desired = self.trajectory.get_desired_state(t)
 
@@ -139,11 +169,13 @@ class YouBotControllerNode:
             self.send_gripper_command(gripper_cmd)
 
             # 8. Логирование для отладки (периодическое, раз в секунду)
+
             if int(t * 10) % 10 == 0:
                 rospy.loginfo_throttle(1,
                     f"Time: {t:.2f}, State: {self.trajectory.current_phase}, "
                     f"Goal: ({desired['x']:.2f}, {desired['y']:.2f}), "
                     f"Curr: ({self.base_x:.2f}, {self.base_y:.2f})"
+                    f"Sending cmd_vel: vx={vx:.2f}, vy={vy:.2f}, omega={omega:.2f}"
                 )
             # Если мы в фазе PLACE и расстояние до цели < 0.1 м, принудительно останавливаем
             if self.trajectory.current_phase == 'PLACE':
@@ -155,7 +187,6 @@ class YouBotControllerNode:
             self.rate.sleep()
 
 # Точка входа
-
 if __name__ == '__main__':
     try:
         node = YouBotControllerNode()

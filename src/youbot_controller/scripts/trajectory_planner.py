@@ -1,280 +1,174 @@
 #!/usr/bin/env python3
+# trajectory_planner.py – полная версия с RRT и сплайнами
+
 import math
+import numpy as np
+from scipy.interpolate import CubicSpline
+from rrt_planner import RRTPlanner
 import rospy
 
-# Планировщик траектории, возвращающий желаемое состояние в зависимости от времени.
-#   Состояние включает: положение базы (x, y, theta), углы руки (5 значений),
-#   раскрытие схвата.
 class TrajectoryPlanner:
     def __init__(self):
-        # Параметры миссии (можно переопределить через rosparam)
-        self.object_x = rospy.get_param('~object_x', 1.5)
-        self.object_y = rospy.get_param('~object_y', 1.5)
-        self.approach_distance = rospy.get_param('~approach_distance', 0.5)
+        # Координаты в области 5×5
+        self.object_pos = (1.0, 1.0)
+        self.marker_pos = (4.0, 4.0)
+        self.home_pos = None
 
-        # Целевые конфигурации руки (углы в радианах)
-        # Все углы заданы в порядке: [arm_joint_1, arm_joint_2, arm_joint_3, arm_joint_4, arm_joint_5]
-        self.home_angles = [0.01, 0.01, -0.1, 0.01, 0.01] # сложенное положение
-        self.grasp_angles = [0.5, 0.8, -1.2, 0.3, 0.0]    # положение для захвата
-        self.lift_angles = [0.5, 0.8, -0.5, 0.8, 0.0]     # поднятое положение
-        self.place_angles = [0.5, 0.8, -0.2, -0.5, 0.0]   # положение для постановки
+        # Препятствия
+        self.obstacles = [
+            (1.5, 2.0, 0.4),
+            (2.5, 1.5, 0.35),
+            (3.0, 3.0, 0.45),
+            (2.0, 3.5, 0.3),
+            (3.5, 2.5, 0.25)
+        ]
+        self.bounds = (-0.5, 4.5, -0.5, 4.5)
 
-        # Параметры схвата
-        self.gripper_opened = rospy.get_param('~gripper_open', 0.02)           # открыт (м)
-        self.gripper_closed = rospy.get_param('~gripper_closed', 0.0)          # закрыт (м)
-        self.gripper_close_time = rospy.get_param('~gripper_close_time', 1.5)  # время закрытия (сек)
-        self.gripper_open_time = rospy.get_param('~gripper_open_time', 1.0)    # время открытия (сек)
+        # Временные параметры
+        self.time_approach = 4.0
+        self.time_grasp = 2.0
+        self.time_move = 8.0
+        self.time_place = 2.0
+        self.time_return = 5.0
+        self.total_time = self.time_approach + self.time_grasp + self.time_move + self.time_place + self.time_return
 
-        # Временные метки для фаз (относительные)
-        self.t_approach_start = 0.0
-        self.t_reach_start = None # устанавливается динамически
-        self.t_grasp_start = None
-        self.t_lift_start = None
-        self.t_retreat_start = None
-        self.t_return_start = None
-        self.t_place_start = None
+        # Углы руки
+        self.home_angles = [0.01, 0.01, -0.1, 0.01, 0.01]
+        self.grasp_angles = [0.5, 0.8, -1.2, 0.3, 0.0]
+        self.lift_angles = [0.5, 0.8, -0.5, 0.8, 0.0]
+        self.place_angles = [0.5, 0.8, -0.2, -0.5, 0.0]
 
-        # Параметры движения
-        self.amplitude = rospy.get_param('~amplitude', 0.2) # амплитуда синусоидального бокового смещения
-        self.zigzag_amplitude = rospy.get_param('~zigzag_amplitude', 0.15) # амплитуда зигзага при отъезде
+        # Пути и сплайны
+        self.path_approach = []
+        self.path_move = []
+        self.path_return = []
+        self.spline_approach = None
+        self.spline_move = None
+        self.spline_return = None
+        self.start_pose = None
+        self.current_phase = 'INIT'
 
-        # Инициализация времени начала
-        self.start_time = rospy.Time.now().to_sec()
+    def init_mission(self, start_pose):
+        rospy.loginfo("=== init_mission called with start_pose: (%.2f, %.2f, %.2f) ===", *start_pose)
+        self.start_pose = start_pose
+        self.home_pos = (start_pose[0], start_pose[1])
 
-        rospy.loginfo("Trajectory Planner initialized with object at (%.2f, %.2f)", self.object_x, self.object_y)
+        rospy.loginfo("Планирование путей RRT...")
+        self.path_approach = self._plan_path(self.home_pos, self.object_pos)
+        self.path_move = self._plan_path(self.object_pos, self.marker_pos)
+        self.path_return = self._plan_path(self.marker_pos, self.home_pos)
 
-    # Вспомогательный метод
-    # Линейная интерполяция между двумя наборами углов
+        rospy.loginfo("Paths lengths: approach=%d, move=%d, return=%d", len(self.path_approach), len(self.path_move), len(self.path_return))
+        self.spline_approach = self._create_spline_or_none(self.path_approach)
+        self.spline_move = self._create_spline_or_none(self.path_move)
+        self.spline_return = self._create_spline_or_none(self.path_return)
+
+        if self.spline_approach is None:
+            rospy.logwarn("RRT не нашёл путь к объекту, используется прямая линия")
+        if self.spline_move is None:
+            rospy.logwarn("RRT не нашёл путь к маркеру, используется прямая линия")
+        if self.spline_return is None:
+            rospy.logwarn("RRT не нашёл путь обратно в home, используется прямая линия")
+        rospy.loginfo("Планирование завершено.")
+
+    def _plan_path(self, start, goal):
+        planner = RRTPlanner(start, goal, self.obstacles, self.bounds, max_iter=800, step_size=0.2)
+        return planner.plan()
+
+    def _create_spline_or_none(self, points):
+        if len(points) > 1:
+            pts = np.array(points)
+            t = np.linspace(0, 1, len(pts))
+            spline_x = CubicSpline(t, pts[:,0])
+            spline_y = CubicSpline(t, pts[:,1])
+            return (spline_x, spline_y)
+        return None
+
     def _interpolate_angles(self, start_angles, end_angles, progress):
-        return [start_angles[i] + progress * (end_angles[i] - start_angles[i]) for i in range(5)]
+        return [start_angles[i] + progress * (end_angles[i] - start_angles[i]) for i in range(len(start_angles))]
 
-    # Основной метод
-    #Возвращает желаемое состояние в момент времени t (сек от начала миссии).
+    def _get_pose_from_spline(self, spline, t, default_start, default_end):
+        if default_start is None or default_end is None:
+            return 0.0, 0.0, 0.0
+        if spline is not None:
+            x = spline[0](t)
+            y = spline[1](t)
+            dx = spline[0].derivative()(t)
+            dy = spline[1].derivative()(t)
+            theta = math.atan2(dy, dx) if (dx != 0 or dy != 0) else 0.0
+        else:
+            sx, sy = default_start
+            ex, ey = default_end
+            x = sx + t * (ex - sx)
+            y = sy + t * (ey - sy)
+            theta = math.atan2(ey - sy, ex - sx)
+        return x, y, theta
+
     def get_desired_state(self, t):
-        # Если не заданы времена начала фаз, устанавливаем их
-        if self.t_reach_start is None:
-            self.t_reach_start = self.t_approach_start + 8.0
-            self.t_grasp_start = self.t_reach_start + 3.0
-            self.t_lift_start = self.t_grasp_start + 1.5
-            self.t_retreat_start = self.t_lift_start + 2.0
-            self.t_return_start = self.t_retreat_start + 5.0
-            self.t_place_start = self.t_return_start + 8.0
+        if t < 0:
+            t = 0.0
 
-        # Определяем текущую фазу по времени
-        if t < self.t_reach_start:
+        if t < self.time_approach:
             self.current_phase = 'APPROACH'
-            return self._approach_phase(t)
-        elif t < self.t_grasp_start:
-            self.current_phase = 'REACH'
-            return self._reach_phase(t)
-        elif t < self.t_lift_start:
+            local_t = t / self.time_approach
+            x, y, theta = self._get_pose_from_spline(
+                self.spline_approach, local_t,
+                self.home_pos, self.object_pos
+            )
+            arm_angles = self.home_angles
+            gripper = 0.02
+            return {'x': x, 'y': y, 'theta': theta,
+                    'arm_angles': arm_angles, 'gripper': gripper}
+
+        t_grasp_start = self.time_approach
+        if t < t_grasp_start + self.time_grasp:
             self.current_phase = 'GRASP'
-            return self._grasp_phase(t)
-        elif t < self.t_retreat_start:
-            self.current_phase = 'LIFT'
-            return self._lift_phase(t)
-        elif t < self.t_return_start:
-            self.current_phase = 'RETREAT'
-            return self._retreat_phase(t)
-        elif t < self.t_place_start:
-            self.current_phase = 'RETURN'
-            return self._return_phase(t)
-        else:
+            local_t = (t - t_grasp_start) / self.time_grasp
+            x, y = self.object_pos
+            theta = 0.0
+            arm_angles = self._interpolate_angles(self.home_angles, self.grasp_angles, local_t)
+            gripper = 0.02 * (1.0 - local_t)
+            return {'x': x, 'y': y, 'theta': theta,
+                    'arm_angles': arm_angles, 'gripper': gripper}
+
+        t_move_start = self.time_approach + self.time_grasp
+        if t < t_move_start + self.time_move:
+            self.current_phase = 'MOVE'
+            local_t = (t - t_move_start) / self.time_move
+            x, y, theta = self._get_pose_from_spline(
+                self.spline_move, local_t,
+                self.object_pos, self.marker_pos
+            )
+            arm_angles = self.lift_angles
+            gripper = 0.0
+            return {'x': x, 'y': y, 'theta': theta,
+                    'arm_angles': arm_angles, 'gripper': gripper}
+
+        t_place_start = t_move_start + self.time_move
+        if t < t_place_start + self.time_place:
             self.current_phase = 'PLACE'
-            return self._place_phase(t)
+            local_t = (t - t_place_start) / self.time_place
+            x, y = self.marker_pos
+            theta = 0.0
+            arm_angles = self._interpolate_angles(self.lift_angles, self.place_angles, local_t)
+            if local_t < 0.5:
+                gripper = 0.0
+            else:
+                gripper = 0.02 * (local_t - 0.5) / 0.5
+            return {'x': x, 'y': y, 'theta': theta,
+                    'arm_angles': arm_angles, 'gripper': gripper}
 
-    # Фаза 1: Подъезд к объекту
-    # Траектория с синусоидальным смещением, манипулятор постепенно переходит из home в положение захвата)
-    def _approach_phase(self, t):
-        # Время нормируем от начала фазы до её конца
-        t_local = t - self.t_approach_start
-        duration = self.t_reach_start - self.t_approach_start
-        if duration <= 0:
-            duration = 1.0
-        progress = min(t_local / duration, 1.0)
-
-        # Расчёт позиции платформы: прямолинейное движение к объекту + боковое смещение
-        # Центр дуги - на полпути к объекту
-        mid_x = self.object_x / 2.0
-        mid_y = self.object_y / 2.0
-
-        # Добавляем синусоидальное боковое смещение (в перпендикулярном направлении)
-        # Смещение зависит от progress и времени
-        lateral = self.amplitude * math.sin(2.0 * math.pi * progress * 1.5) * (1 - progress)
-
-        # Прямолинейная интерполяция с добавлением синусоидального отклонения
-        x_base = mid_x * progress  # линейно растем до середины, потом к объекту
-        y_base = mid_y * progress
-        
-        # Корректируем x,y: добавляем смещение перпендикулярно направлению движения
-        # Для простоты добавим смещение по Y (если цель по диагонали, это будет не совсем перпендикулярно, но для демонстрации сойдёт)
-        x_des = x_base + lateral * 0.5
-        y_des = y_base + lateral * 0.5
-
-        # Желаемая ориентация: смотреть на объект (если мы не на месте)
-        if self.object_x - x_des != 0 or self.object_y - y_des != 0:
-            theta_des = math.atan2(self.object_y - y_des, self.object_x - x_des)
         else:
-            theta_des = math.atan2(self.object_y, self.object_x)
-
-        # Плавный переход манипулятора из home в положение захвата
-        arm_angles = self._interpolate_angles(self.home_angles, self.grasp_angles, progress)
-        gripper = self.gripper_opened  # открыт
-
-        return {'x': x_des, 'y': y_des, 'theta': theta_des,
-                'arm_angles': arm_angles, 'gripper': gripper}
-
-    # Фаза 2: Выдвижение манипулятора к объекту
-    # Платформа стоит на месте, манипулятор фиксируется в положении захвата
-    def _reach_phase(self, t):
-        # Продолжаем интерполяцию, чтобы манипулятор достиг точных углов захвата
-        t_local = t - self.t_reach_start
-        duration = self.t_grasp_start - self.t_reach_start
-        if duration <= 0:
-            duration = 1.0
-        progress = min(t_local / duration, 1.0)
-
-        arm_angles = self._interpolate_angles(self.grasp_angles, self.grasp_angles, progress)  # фиксируем
-
-        # Платформа остаётся на месте (держим позицию, где остановились)
-        # Возвращаем ту же позицию, что была в конце APPROACH
-        # Для простоты зафиксируем позицию на объекте с небольшим отступом
-        x_des = self.object_x - 0.3 * math.cos(math.atan2(self.object_y, self.object_x))
-        y_des = self.object_y - 0.3 * math.sin(math.atan2(self.object_y, self.object_x))
-        theta_des = math.atan2(self.object_y, self.object_x)
-        gripper = self.gripper_opened
-
-        return {'x': x_des, 'y': y_des, 'theta': theta_des,
-                'arm_angles': arm_angles, 'gripper': gripper}
-
-    # Фаза 3: Захват объект
-    # Схват закрывается, манипуялтор и платформа остаются на месте
-    def _grasp_phase(self, t):
-        t_local = t - self.t_grasp_start
-        progress = min(t_local / self.gripper_close_time, 1.0)
-
-        # Манипулятор остаётся в положении захвата объекта, схват закрывается
-        gripper = self.gripper_opened * (1.0 - progress)
-        arm_angles = self.grasp_angles[:]
-        
-        # Позиция платформы и ориентация такие же, как в REACH
-        x_des = self.object_x - 0.3 * math.cos(math.atan2(self.object_y, self.object_x))
-        y_des = self.object_y - 0.3 * math.sin(math.atan2(self.object_y, self.object_x))
-        theta_des = math.atan2(self.object_y, self.object_x)
-
-        return {'x': x_des, 'y': y_des, 'theta': theta_des,
-                'arm_angles': arm_angles, 'gripper': gripper}
-
-    # Фаза 4: Вывод манипулятора со схваченным объектом
-    # Манипулятор переходит из положения захвата в поднятое положение
-    def _lift_phase(self, t):
-        t_local = t - self.t_lift_start
-        duration = self.t_retreat_start - self.t_lift_start
-        if duration <= 0:
-            duration = 1.0
-        progress = min(t_local / duration, 1.0)
-
-        # Интерполяция от углов захвата к углам подъёма
-        arm_angles = self._interpolate_angles(self.grasp_angles, self.lift_angles, progress)
-        gripper = self.gripper_closed  # схват закрыт (держим объект)
-
-        # Платформа на месте
-        x_des = self.object_x - 0.3 * math.cos(math.atan2(self.object_y, self.object_x))
-        y_des = self.object_y - 0.3 * math.sin(math.atan2(self.object_y, self.object_x))
-        theta_des = math.atan2(self.object_y, self.object_x)
-
-        return {'x': x_des, 'y': y_des, 'theta': theta_des,
-                'arm_angles': arm_angles, 'gripper': gripper}
-
-    # Фаза 5: Отъезд от объекта (с зигзагами)
-    # Движение назад с зигзагообразной траекторией
-    def _retreat_phase(self, t):
-        t_local = t - self.t_retreat_start
-        duration = self.t_return_start - self.t_retreat_start
-        if duration <= 0:
-            duration = 1.0
-        progress = min(t_local / duration, 1.0)
-
-        # Начальная точка (где мы стояли)
-        start_x = self.object_x - 0.3 * math.cos(math.atan2(self.object_y, self.object_x))
-        start_y = self.object_y - 0.3 * math.sin(math.atan2(self.object_y, self.object_x))
-
-        # Конечная точка: отъезжаем назад (в направлении, обратном начальному)
-        angle_to_object = math.atan2(self.object_y, self.object_x)
-        retreat_direction = angle_to_object + math.pi  # противоположное направление
-        retreat_distance = 0.8
-        end_x = start_x + retreat_distance * math.cos(retreat_direction) + 0.3 * math.sin(retreat_direction)
-        end_y = start_y + retreat_distance * math.sin(retreat_direction) - 0.3 * math.cos(retreat_direction)
-
-        # Зигзаг: добавляем синусоидальное смещение перпендикулярно направлению движения
-        # Направление движения (вектор)
-        dx = end_x - start_x
-        dy = end_y - start_y
-        length = math.hypot(dx, dy)
-        # Перпендикулярный вектор
-        if length > 0:
-            perp_x = -dy / length
-            perp_y = dx / length
-        else:
-            perp_x, perp_y = 0.0, 0.0
-        zigzag = self.zigzag_amplitude * math.sin(2.0 * math.pi * progress * 3.0)
-
-        # Интерполяция с добавлением зигзага (боковое смещение)
-        x_des = start_x + progress * (end_x - start_x) + zigzag * perp_x
-        y_des = start_y + progress * (end_y - start_y) + zigzag * perp_y
-
-        # Желаемая ориентация: смотреть в направлении движения
-        theta_des = math.atan2(dy, dx)
-        arm_angles = self.lift_angles[:]
-        gripper = self.gripper_closed
-
-        return {'x': x_des, 'y': y_des, 'theta': theta_des,
-                'arm_angles': arm_angles, 'gripper': gripper}
-
-    # Фаза 6: Возврат в исходную точку (0,0,0) с коррекцией ориентации
-    # Движение в (0,0,0) с синусоидальным отклонением
-    def _return_phase(self, t):
-        t_local = t - self.t_return_start
-        duration = self.t_place_start - self.t_return_start
-        if duration <= 0:
-            duration = 1.0
-        progress = min(t_local / duration, 1.0)
-
-        # Прямолинейная интерполяция
-        # Начальная точка: где мы оказались в конце RETREAT
-        start_x = self.object_x
-        start_y = self.object_y
-        end_x, end_y = 0.0, 0.0
-
-        # Интерполяция с синусоидальным отклонением для сложности
-        x_des = start_x + progress * (end_x - start_x) + 0.1 * math.sin(2.0 * math.pi * progress * 2.0)
-        y_des = start_y + progress * (end_y - start_y) + 0.1 * math.cos(2.0 * math.pi * progress * 2.0)
-
-        # Желаемая ориентация: 0 (смотреть вдоль оси X)
-        theta_des = 0.0
-        arm_angles = self.lift_angles[:]
-        gripper = self.gripper_closed
-
-        return {'x': x_des, 'y': y_des, 'theta': theta_des,
-                'arm_angles': arm_angles, 'gripper': gripper}
-
-    # Фаза 7: Постановка объекта на пол
-    def _place_phase(self, t):
-        t_local = t - self.t_place_start
-        progress = min(t_local / 2.0, 1.0)
-
-        # Фиксируем желаемые углы для постановки
-        arm_angles = self._interpolate_angles(self.lift_angles, self.place_angles, progress)
-
-        # Через некоторое время открываем схват
-        if t_local < self.gripper_open_time:
-            gripper = self.gripper_closed  # закрыт (ещё не отпускаем)
-        else:
-            gripper = self.gripper_opened  # открываем
-
-        # База остаётся на месте (0,0)
-        x_des, y_des, theta_des = 0.0, 0.0, 0.0
-
-        # После открытия схвата можно завершить миссию, но мы просто останемся в этом состоянии.
-        return {'x': x_des, 'y': y_des, 'theta': theta_des,
-                'arm_angles': arm_angles, 'gripper': gripper}
+            self.current_phase = 'RETURN'
+            t_return_start = t_place_start + self.time_place
+            local_t = (t - t_return_start) / self.time_return
+            if local_t > 1.0:
+                local_t = 1.0
+            x, y, theta = self._get_pose_from_spline(
+                self.spline_return, local_t,
+                self.marker_pos, self.home_pos
+            )
+            arm_angles = self._interpolate_angles(self.place_angles, self.home_angles, local_t)
+            gripper = 0.02
+            return {'x': x, 'y': y, 'theta': theta,
+                    'arm_angles': arm_angles, 'gripper': gripper}
