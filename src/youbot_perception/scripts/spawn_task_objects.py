@@ -63,16 +63,15 @@ def cube_sdf(name, rgba, size=0.05, mass=0.05):
 </sdf>"""
 
 
-def pad_sdf(name, rgba, sx=0.25, sy=0.25, sz=0.005):
-    # Тонкая статичная пластина-«картонка».
+def pad_sdf(name, rgba, sx=0.25, sy=0.25, sz=0.002):
+    # Плоская цветная «картонка» БЕЗ коллизии — это просто метка на полу,
+    # как настоящий тонкий картон. Без коллизии база свободно проезжает по
+    # ней и не «залезает» на пластину.
     return f"""<?xml version="1.0"?>
 <sdf version="1.6">
   <model name="{name}">
     <static>true</static>
     <link name="link">
-      <collision name="col">
-        <geometry><box><size>{sx} {sy} {sz}</size></box></geometry>
-      </collision>
       <visual name="vis">
         <geometry><box><size>{sx} {sy} {sz}</size></box></geometry>
         <material>

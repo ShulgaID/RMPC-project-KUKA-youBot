@@ -41,11 +41,13 @@
     <!-- <param name="camera_info_url" value="file:///home/user/.ros/camera_info/usb_cam.yaml"/> -->
   </node>
 
-  <!-- TF крепления камеры. ПОДГОНИТЕ смещения под реальную установку!
+  <!-- TF крепления камеры. ПОДГОНИТЕ под реальную установку!
        Аргументы: x y z yaw pitch roll parent child.
-       Здесь камера на столике, смотрит по -X базы, наклон вниз. -->
+       Камера спереди ПО ЦЕНТРУ (y=0), на стойке ~45 см от пола.
+       base_link выше пола на ~0.14 м => z ≈ 0.31. Смотрит вперёд (-X, yaw=pi)
+       и вниз на пол (pitch=0.7 ≈ 40°). Рука манипулятора — с другой стороны. -->
   <node name="usb_cam_tf" pkg="tf2_ros" type="static_transform_publisher"
-        args="-0.20 0.0 0.30 3.14159 0.6 0.0 base_link usb_cam_optical_frame"/>
+        args="-0.20 0.0 0.31 3.14159 0.7 0.0 base_link usb_cam_optical_frame"/>
 
   <!-- Детекция по USB-камере -->
   <node name="cube_detector" pkg="youbot_perception" type="cube_detector.py" output="screen">
@@ -54,6 +56,11 @@
     <param name="target_frame" value="$(arg target_frame)"/>
     <param name="floor_z"      value="0.0"/>
     <param name="cube_top_z"   value="0.025"/>
+    <!-- Чёрные угловые маркеры границ рабочей зоны (см. методичку, Раздел B). -->
+    <param name="detect_markers"     value="true"/>
+    <param name="marker_min_area_px" value="400"/>
+    <param name="black_v_max"        value="60"/>
+    <param name="black_s_max"        value="90"/>
   </node>
 
   <!-- Миссия. Точки B/C/картонки задайте параметрами под реальную сцену
