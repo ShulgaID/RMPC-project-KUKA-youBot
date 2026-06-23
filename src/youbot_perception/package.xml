@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>youbot_perception</name>
+  <version>1.0.0</version>
+  <description>
+    Детекция кубика по цвету (RGB-D), захват и перестановка на картонку
+    соответствующего цвета для KUKA youBot (Gazebo + реальный робот).
+  </description>
+  <maintainer email="rmpc@example.com">RMPC team</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>trajectory_msgs</exec_depend>
+  <exec_depend>gazebo_msgs</exec_depend>
+  <exec_depend>tf</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>tf2_geometry_msgs</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>image_transport</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+</package>

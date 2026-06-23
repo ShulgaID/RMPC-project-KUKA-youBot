@@ -1,0 +1,85 @@
+<?xml version="1.0"?>
+<!-- =========================================================================
+     pick_place_sim.launch  (Редакция 3)
+     =========================================================================
+     Полный запуск задачи в Gazebo:
+       1) пустой мир Gazebo;
+       2) youBot с USB-вебкамерой + planar_move (реальное движение и одометрия)
+          + grasp-fix (youbot_task.urdf.xacro);
+       3) контроллеры СУСТАВОВ/руки/схвата (база едет через planar_move, а НЕ
+          через колёсные velocity-контроллеры — меканум в Gazebo не работает);
+       4) room_generator (точки A/B/C, препятствия). Точка B ПО УМОЛЧАНИЮ в
+          левом верхнем углу (cell_B=0,4 для комнаты 5x5);
+       5) расстановка кубика случайного цвета в B и трёх картонок в C;
+       6) cube_detector (детекция цвета по USB-камере + обводка кубика);
+       7) pick_place_mission (детекция -> захват -> перестановка по цвету).
+
+     Запуск:
+       roslaunch youbot_perception pick_place_sim.launch
+     Зафиксировать цвет кубика:
+       roslaunch youbot_perception pick_place_sim.launch cube_color:=red
+     Сменить ячейку B:
+       roslaunch youbot_perception pick_place_sim.launch cell_B:=2,2
+     ========================================================================= -->
+<launch>
+  <arg name="gui"        default="true"/>
+  <arg name="cube_color" default=""/>      <!-- '' => случайный -->
+  <arg name="seed"       default="42"/>
+  <arg name="cell_B"     default="0,4"/>    <!-- ЛЕВЫЙ ВЕРХНИЙ УГОЛ по умолчанию -->
+
+  <!-- 1) Gazebo (пустой мир) -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="paused"       value="false"/>
+    <arg name="use_sim_time" value="true"/>
+    <arg name="gui"          value="$(arg gui)"/>
+    <arg name="headless"     value="false"/>
+    <arg name="debug"        value="false"/>
+  </include>
+
+  <!-- 2) URDF youBot с USB-камерой + planar_move -->
+  <param name="robot_description"
+         command="$(find xacro)/xacro '$(find youbot_perception)/urdf/youbot_task.urdf.xacro'"/>
+
+  <node pkg="gazebo_ros" type="spawn_model" name="spawn_robot" output="screen"
+        args="-param robot_description -urdf -x 0.5 -y 0.5 -z 0.1 -model youbot"/>
+
+  <!-- 3) Контроллеры СУСТАВОВ (рука/схват). База — через planar_move в URDF. -->
+  <include file="$(find youbot_gazebo_control)/launch/joint_state_controller.launch"/>
+  <include file="$(find youbot_controller)/launch/arm_controller.launch"/>
+  <include file="$(find youbot_controller)/launch/gripper_controller.launch"/>
+
+  <node pkg="robot_state_publisher" type="robot_state_publisher" name="robot_state_publisher">
+    <param name="publish_frequency" type="double" value="50.0"/>
+  </node>
+
+  <!-- 4) Комната + точки A/B/C. B по умолчанию в левом верхнем углу. -->
+  <include file="$(find youbot_controller)/launch/room_generator.launch">
+    <arg name="cell_B" value="$(arg cell_B)"/>
+    <arg name="seed"   value="$(arg seed)"/>
+  </include>
+
+  <!-- 5) Объекты задачи: кубик случайного цвета в B, картонки в C.
+          Спавним с задержкой, чтобы Gazebo и room_generator успели подняться. -->
+  <node name="spawn_task_objects" pkg="youbot_perception" type="spawn_task_objects.py"
+        output="screen" launch-prefix="bash -c 'sleep 6.0; $0 $@'">
+    <param name="cube_color" value="$(arg cube_color)"/>
+    <param name="seed"       value="$(arg seed)"/>
+  </node>
+
+  <!-- 6) Детекция по USB-камере (RGB, без глубины) + обводка кубика -->
+  <node name="cube_detector" pkg="youbot_perception" type="cube_detector.py" output="screen">
+    <param name="image_topic"  value="/usb_cam/image_raw"/>
+    <param name="info_topic"   value="/usb_cam/camera_info"/>
+    <param name="target_frame" value="odom"/>
+    <param name="floor_z"      value="0.0"/>
+    <param name="cube_top_z"   value="0.025"/>
+  </node>
+
+  <!-- 7) Миссия (с задержкой — ждём детектор и расстановку объектов) -->
+  <node name="pick_place_mission" pkg="youbot_perception" type="pick_place_mission.py"
+        output="screen" launch-prefix="bash -c 'sleep 10.0; $0 $@'">
+    <param name="robot_radius"  value="0.40"/>
+    <param name="safety_margin" value="0.15"/>
+  </node>
+
+</launch>

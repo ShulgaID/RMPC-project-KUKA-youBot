@@ -1,42 +1,6 @@
-# catkin / ROS сборка
 build/
 devel/
 install/
-.catkin_workspace
-src/CMakeLists.txt
-
-# Python
 *.pyc
-*.pyo
-*.pyd
-__pycache__/
-*.so
-*.egg
-*.egg-info/
-dist/
-build/
-*.log
-.coverage
-htmlcov/
-
-# IDE и редакторы
 .vscode/
-.idea/
-*.swp
-*.swo
-*~
-.~*
-.project
-.classpath
-.settings/
-*.iml
-
-# Системные и временные файлы
-.DS_Store
-Thumbs.db
-*.tmp
-*.bak
-*.orig
-*.rej
-*.patch
-*.diff
+.goutputstream*

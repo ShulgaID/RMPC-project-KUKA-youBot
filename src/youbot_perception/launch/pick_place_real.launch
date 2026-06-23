@@ -1,0 +1,67 @@
+<?xml version="1.0"?>
+<!-- =========================================================================
+     pick_place_real.launch  (Редакция 3 — USB-вебкамера)
+     =========================================================================
+     Запуск ТОЙ ЖЕ задачи на реальном youBot с USB-вебкамерой (FIFINE K420).
+     Отличия от симуляции:
+       - нет Gazebo и нет spawn_task_objects (объекты реальные);
+       - база/рука/схват — драйвер youbot_driver_ros_interface;
+       - камера — обычная 2D USB-вебкамера через пакет usb_cam (БЕЗ глубины).
+         Позиция кубика оценивается проекцией пикселя на плоскость пола, как
+         и в симуляции. АЛГОРИТМ детекции и сама миссия — БЕЗ ИЗМЕНЕНИЙ.
+
+     Перед запуском:
+       - откалибруйте камеру и подайте корректный /usb_cam/camera_info
+         (иначе позиция кубика будет неточной);
+       - задайте TF от кадра камеры usb_cam_optical_frame до odom/base_footprint
+         (через static_transform_publisher с реальными смещениями крепления);
+       - подгоните HSV-пороги в cube_detector под освещение.
+
+     Запуск (пример video device /dev/video0):
+       roslaunch youbot_perception pick_place_real.launch video_device:=/dev/video0
+     ========================================================================= -->
+<launch>
+  <arg name="video_device" default="/dev/video0"/>
+  <arg name="img_width"    default="1280"/>
+  <arg name="img_height"   default="720"/>
+  <arg name="target_frame" default="odom"/>
+
+  <!-- Драйвер реального робота (база + рука + схват + /odom) -->
+  <include file="$(find youbot_driver_ros_interface)/launch/youbot_driver.launch"/>
+
+  <!-- USB-вебкамера через пакет usb_cam (sudo apt install ros-noetic-usb-cam) -->
+  <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" output="screen">
+    <param name="video_device" value="$(arg video_device)"/>
+    <param name="image_width"  value="$(arg img_width)"/>
+    <param name="image_height" value="$(arg img_height)"/>
+    <param name="pixel_format" value="yuyv"/>
+    <param name="camera_frame_id" value="usb_cam_optical_frame"/>
+    <param name="io_method" value="mmap"/>
+    <!-- ВАЖНО: задайте camera_info_url с файлом калибровки вашей камеры -->
+    <!-- <param name="camera_info_url" value="file:///home/user/.ros/camera_info/usb_cam.yaml"/> -->
+  </node>
+
+  <!-- TF крепления камеры. ПОДГОНИТЕ смещения под реальную установку!
+       Аргументы: x y z yaw pitch roll parent child.
+       Здесь камера на столике, смотрит по -X базы, наклон вниз. -->
+  <node name="usb_cam_tf" pkg="tf2_ros" type="static_transform_publisher"
+        args="-0.20 0.0 0.30 3.14159 0.6 0.0 base_link usb_cam_optical_frame"/>
+
+  <!-- Детекция по USB-камере -->
+  <node name="cube_detector" pkg="youbot_perception" type="cube_detector.py" output="screen">
+    <param name="image_topic"  value="/usb_cam/image_raw"/>
+    <param name="info_topic"   value="/usb_cam/camera_info"/>
+    <param name="target_frame" value="$(arg target_frame)"/>
+    <param name="floor_z"      value="0.0"/>
+    <param name="cube_top_z"   value="0.025"/>
+  </node>
+
+  <!-- Миссия. Точки B/C/картонки задайте параметрами под реальную сцену
+       (или через room_generator). -->
+  <node name="pick_place_mission" pkg="youbot_perception" type="pick_place_mission.py"
+        output="screen">
+    <param name="robot_radius"  value="0.40"/>
+    <param name="safety_margin" value="0.15"/>
+  </node>
+
+</launch>

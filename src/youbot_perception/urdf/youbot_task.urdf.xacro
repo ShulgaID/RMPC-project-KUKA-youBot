@@ -1,0 +1,154 @@
+<?xml version="1.0"?>
+<!-- =========================================================================
+     youbot_task.urdf.xacro  (Редакция 3)
+     =========================================================================
+     youBot для задачи детекции/захвата/перестановки кубика по цвету.
+
+     Отличия этой редакции:
+       1. ДВИЖЕНИЕ БАЗЫ через плагин planar_move. Гонять mecanum-колёса в
+          Gazebo бесполезно: ролики меканума не моделируются, робот стоит
+          на месте, а одометрия в RViz «уезжает» (фейковый интеграл команд).
+          planar_move двигает base_footprint прямо по /cmd_vel и публикует
+          ИСТИННУЮ одометрию /odom + TF odom->base_footprint из позы тела в
+          Gazebo. Теперь RViz и Gazebo синхронны, и робот реально доезжает.
+       2. USB-ВЕБКАМЕРА (FIFINE K420, 2K) ВМЕСТО 3D-камеры. Камера стоит на
+          столике/площадке робота и смотрит ВПЕРЁД — В СТОРОНУ, ПРОТИВОПОЛОЖНУЮ
+          манипулятору (рука у youBot по +X; «перед» зрения — по -X). Это
+          обычная 2D-камера без глубины: публикует только RGB
+          /usb_cam/image_raw. Глубину детектор не использует — позиция кубика
+          оценивается проекцией пикселя на плоскость пола.
+     ========================================================================= -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro/#interface" name="youbot">
+
+  <xacro:include filename="$(find youbot_description)/urdf/common.xacro" />
+  <xacro:include filename="$(find youbot_description)/urdf/youbot_base/base.urdf.xacro" />
+  <xacro:include filename="$(find youbot_description)/urdf/youbot_plate/plate.urdf.xacro" />
+  <xacro:include filename="$(find youbot_description)/urdf/youbot_arm/arm.urdf.xacro"/>
+  <xacro:include filename="$(find youbot_description)/urdf/youbot_gripper/gripper.urdf.xacro" />
+  <xacro:include filename="$(find youbot_description)/controller/ros_controller.urdf.xacro" />
+  <xacro:include filename="$(find youbot_description)/urdf/materials.urdf.xacro" />
+  <xacro:include filename="$(find youbot_description)/urdf/sensors/hokuyo_urg04_laser.urdf.xacro"/>
+
+  <xacro:youbot_base name="base"/>
+
+  <xacro:youbot_plate name="plate" parent="base_link">
+    <origin xyz="-0.159 0 0.046" rpy="0 0 0" />
+  </xacro:youbot_plate>
+
+  <xacro:youbot_arm name="arm" parent="base_link">
+    <origin xyz="0.143 0 0.046" rpy="0 0 0" />
+  </xacro:youbot_arm>
+
+  <xacro:youbot_gripper name="gripper" parent="arm_link_5">
+    <origin xyz="0 0 0" rpy="0 0 0" />
+  </xacro:youbot_gripper>
+
+  <xacro:hokuyo_urg04_laser name="base_laser_front" parent="base"
+        ros_topic="scan_front" update_rate="10" min_angle="-1.57" max_angle="1.57">
+    <origin xyz="0.3 0 -0.03" rpy="0 0 0"/>
+  </xacro:hokuyo_urg04_laser>
+
+  <!-- =====================================================================
+       USB-вебкамера на столике робота. Смотрит в сторону, ПРОТИВОПОЛОЖНУЮ
+       манипулятору. Рука по +X, значит камера направлена по -X базы.
+       Крепится к plate_link, приподнята и наклонена вниз, чтобы видеть пол
+       перед роботом (рабочую зону, куда выезжает кубик).
+       ===================================================================== -->
+  <link name="usb_cam_link">
+    <visual>
+      <geometry><box size="0.03 0.06 0.03"/></geometry>
+      <material name="Black"><color rgba="0.05 0.05 0.05 1"/></material>
+    </visual>
+    <collision>
+      <geometry><box size="0.03 0.06 0.03"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="0.05"/>
+      <inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/>
+    </inertial>
+  </link>
+
+  <!-- Камера на высоте ~0.30 м над платформой, у переднего (-X) края,
+       наклон вниз ~35° (pitch=0.6 рад), смотрит по -X (yaw=pi). -->
+  <joint name="usb_cam_joint" type="fixed">
+    <parent link="plate_link"/>
+    <child link="usb_cam_link"/>
+    <origin xyz="-0.20 0.0 0.30" rpy="0 0.6 3.14159"/>
+  </joint>
+
+  <!-- Оптический кадр камеры (REP-103: z вперёд, x вправо, y вниз) -->
+  <link name="usb_cam_optical_frame"/>
+  <joint name="usb_cam_optical_joint" type="fixed">
+    <parent link="usb_cam_link"/>
+    <child link="usb_cam_optical_frame"/>
+    <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+  </joint>
+
+  <gazebo reference="usb_cam_link">
+    <sensor type="camera" name="usb_cam_sensor">
+      <update_rate>30.0</update_rate>
+      <camera name="usb_cam">
+        <!-- 2K-вебкамера: горизонтальный угол ~1.2 рад (~70°) -->
+        <horizontal_fov>1.2</horizontal_fov>
+        <image>
+          <width>1280</width>
+          <height>720</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.05</near>
+          <far>20</far>
+        </clip>
+      </camera>
+      <plugin name="usb_cam_controller" filename="libgazebo_ros_camera.so">
+        <alwaysOn>true</alwaysOn>
+        <updateRate>30.0</updateRate>
+        <cameraName>usb_cam</cameraName>
+        <imageTopicName>/usb_cam/image_raw</imageTopicName>
+        <cameraInfoTopicName>/usb_cam/camera_info</cameraInfoTopicName>
+        <frameName>usb_cam_optical_frame</frameName>
+        <hackBaseline>0.0</hackBaseline>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+  <!-- =====================================================================
+       ДВИЖЕНИЕ БАЗЫ: planar_move. Двигает base_footprint по /cmd_vel и
+       публикует истинную одометрию из позы тела в Gazebo. Заменяет
+       неработающий mecanum-привод в симуляции.
+       ===================================================================== -->
+  <gazebo>
+    <plugin name="planar_move_controller" filename="libgazebo_ros_planar_move.so">
+      <commandTopic>cmd_vel</commandTopic>
+      <odometryTopic>odom</odometryTopic>
+      <odometryFrame>odom</odometryFrame>
+      <robotBaseFrame>base_footprint</robotBaseFrame>
+      <odometryRate>50.0</odometryRate>
+      <publishOdomTF>true</publishOdomTF>
+    </plugin>
+  </gazebo>
+
+  <!-- =====================================================================
+       gazebo_grasp_fix: фиксирует схваченный объект к захвату, пока пальцы
+       сжаты. Требует пакет gazebo-pkgs (libgazebo_grasp_fix.so). Если плагин
+       не установлен — удалите этот блок; захват тогда держится на трении.
+       ===================================================================== -->
+  <gazebo>
+    <plugin name="gazebo_grasp_fix" filename="libgazebo_grasp_fix.so">
+      <arm>
+        <arm_name>youbot_arm</arm_name>
+        <palm_link>gripper_palm_link</palm_link>
+        <gripper_link>gripper_finger_link_l</gripper_link>
+        <gripper_link>gripper_finger_link_r</gripper_link>
+      </arm>
+      <forces_angle_tolerance>100</forces_angle_tolerance>
+      <update_rate>10</update_rate>
+      <grip_count_threshold>2</grip_count_threshold>
+      <max_grip_count>8</max_grip_count>
+      <release_tolerance>0.004</release_tolerance>
+      <disable_collisions_on_attach>false</disable_collisions_on_attach>
+      <contact_topic>__default_topic__</contact_topic>
+    </plugin>
+  </gazebo>
+
+</robot>
