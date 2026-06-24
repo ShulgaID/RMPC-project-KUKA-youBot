@@ -1,31 +1,52 @@
 <?xml version="1.0"?>
 <!-- =========================================================================
-     pick_place_sim.launch  (Редакция 3)
+     pick_place_sim.launch  (Редакция 4 — единый конфиг)
      =========================================================================
      Полный запуск задачи в Gazebo:
        1) пустой мир Gazebo;
-       2) youBot с USB-вебкамерой + planar_move (реальное движение и одометрия)
-          + grasp-fix (youbot_task.urdf.xacro);
-       3) контроллеры СУСТАВОВ/руки/схвата (база едет через planar_move, а НЕ
-          через колёсные velocity-контроллеры — меканум в Gazebo не работает);
-       4) room_generator (точки A/B/C, препятствия). Точка B ПО УМОЛЧАНИЮ в
-          левом верхнем углу (cell_B=0,4 для комнаты 5x5);
-       5) расстановка кубика случайного цвета в B и трёх картонок в C;
-       6) cube_detector (детекция цвета по USB-камере + обводка кубика);
+       2) youBot с USB-вебкамерой + planar_move + grasp-fix;
+       3) контроллеры руки/схвата (база едет через planar_move);
+       4) room_generator (точки A/B/C, препятствия);
+       5) расстановка кубика в B и трёх картонок в C;
+       6) cube_detector (детекция цвета по USB-камере);
        7) pick_place_mission (детекция -> захват -> перестановка по цвету).
+
+     ВСЕ важные параметры (точки, цвет, препятствия, seed, скорости и т.д.)
+     лежат в ОДНОМ файле:
+         youbot_perception/config/mission_params.yaml
+     Меняйте значения ТАМ — здесь править ничего не нужно.
 
      Запуск:
        roslaunch youbot_perception pick_place_sim.launch
-     Зафиксировать цвет кубика:
-       roslaunch youbot_perception pick_place_sim.launch cube_color:=red
-     Сменить ячейку B:
-       roslaunch youbot_perception pick_place_sim.launch cell_B:=2,2
      ========================================================================= -->
 <launch>
-  <arg name="gui"        default="true"/>
-  <arg name="cube_color" default=""/>      <!-- '' => случайный -->
-  <arg name="seed"       default="42"/>
-  <arg name="cell_B"     default="0,4"/>    <!-- ЛЕВЫЙ ВЕРХНИЙ УГОЛ по умолчанию -->
+  <arg name="gui" default="true"/>
+  <arg name="rviz" default="false"/>   <!-- rviz:=true -> открыть RViz с готовой сценой -->
+
+  <!-- ====================================================================
+       ПЕРЕОПРЕДЕЛЕНИЕ ПАРАМЕТРОВ ИЗ КОМАНДНОЙ СТРОКИ (необязательно).
+       Значения по умолчанию = '' (берётся из mission_params.yaml).
+       Примеры:
+         roslaunch ... pick_place_sim.launch room_width:=3.0 room_height:=4.0
+         roslaunch ... pick_place_sim.launch cell_B:=1,1 cell_C:=2,2 cell_A:=0,0
+         roslaunch ... pick_place_sim.launch cube_color:=blue seed:=7
+       Пусто => значение из единого конфига не трогается.
+       ==================================================================== -->
+  <arg name="room_width"  default=""/>
+  <arg name="room_height" default=""/>
+  <arg name="cell_size"   default=""/>
+  <arg name="cell_A"      default=""/>
+  <arg name="cell_B"      default=""/>
+  <arg name="cell_C"      default=""/>
+  <arg name="cube_color"  default=""/>
+  <arg name="seed"        default=""/>
+  <arg name="robot_x"     default="0.5"/>   <!-- центр ячейки A (парковка) -->
+  <arg name="robot_y"     default="0.5"/>
+
+  <!-- ЕДИНЫЙ конфиг задачи -> namespace /mission_config (виден всем нодам). -->
+  <rosparam ns="mission_config"
+            command="load"
+            file="$(find youbot_perception)/config/mission_params.yaml"/>
 
   <!-- 1) Gazebo (пустой мир) -->
   <include file="$(find gazebo_ros)/launch/empty_world.launch">
@@ -40,8 +61,12 @@
   <param name="robot_description"
          command="$(find xacro)/xacro '$(find youbot_perception)/urdf/youbot_task.urdf.xacro'"/>
 
+  <!-- Стартовая поза робота в Gazebo. ДОЛЖНА совпадать с центром ячейки A
+       (парковка). Для комнаты 5x5 и A=(0,0) это (0.5, 0.5). Если меняете
+       размер комнаты или ячейку A — поправьте robot_x/robot_y соответственно
+       (центр ячейки = origin + (col+0.5)*cell_size). -->
   <node pkg="gazebo_ros" type="spawn_model" name="spawn_robot" output="screen"
-        args="-param robot_description -urdf -x 0.5 -y 0.5 -z 0.1 -model youbot"/>
+        args="-param robot_description -urdf -x $(arg robot_x) -y $(arg robot_y) -z 0.1 -model youbot"/>
 
   <!-- 3) Контроллеры СУСТАВОВ (рука/схват). База — через planar_move в URDF. -->
   <include file="$(find youbot_gazebo_control)/launch/joint_state_controller.launch"/>
@@ -52,18 +77,25 @@
     <param name="publish_frequency" type="double" value="50.0"/>
   </node>
 
-  <!-- 4) Комната + точки A/B/C. B по умолчанию в левом верхнем углу. -->
-  <include file="$(find youbot_controller)/launch/room_generator.launch">
-    <arg name="cell_B" value="$(arg cell_B)"/>
-    <arg name="seed"   value="$(arg seed)"/>
-  </include>
+  <!-- 4) Комната + точки A/B/C + препятствия (всё из /mission_config).
+          Любой параметр можно переопределить аргументом launch (см. выше). -->
+  <node name="room_generator" pkg="youbot_controller" type="room_generator.py"
+        output="screen">
+    <param name="width"     value="$(arg room_width)"/>
+    <param name="height"    value="$(arg room_height)"/>
+    <param name="cell_size" value="$(arg cell_size)"/>
+    <param name="cell_A"    value="$(arg cell_A)"/>
+    <param name="cell_B"    value="$(arg cell_B)"/>
+    <param name="cell_C"    value="$(arg cell_C)"/>
+    <param name="seed"      value="$(arg seed)"/>
+  </node>
 
-  <!-- 5) Объекты задачи: кубик случайного цвета в B, картонки в C.
-          Спавним с задержкой, чтобы Gazebo и room_generator успели подняться. -->
+  <!-- 5) Объекты задачи: кубик в B, картонки в C (цвет/seed из /mission_config).
+          Задержка, чтобы Gazebo и room_generator успели подняться. -->
   <node name="spawn_task_objects" pkg="youbot_perception" type="spawn_task_objects.py"
         output="screen" launch-prefix="bash -c 'sleep 6.0; $0 $@'">
-    <param name="cube_color" value="$(arg cube_color)"/>
-    <param name="seed"       value="$(arg seed)"/>
+    <param name="color" value="$(arg cube_color)"/>
+    <param name="seed"  value="$(arg seed)"/>
   </node>
 
   <!-- 6) Детекция по USB-камере (RGB, без глубины) + обводка кубика -->
@@ -75,11 +107,14 @@
     <param name="cube_top_z"   value="0.025"/>
   </node>
 
-  <!-- 7) Миссия (с задержкой — ждём детектор и расстановку объектов) -->
+  <!-- 7) Миссия (с задержкой — ждём детектор и расстановку объектов).
+          Все параметры миссии берутся из /mission_config. -->
   <node name="pick_place_mission" pkg="youbot_perception" type="pick_place_mission.py"
-        output="screen" launch-prefix="bash -c 'sleep 10.0; $0 $@'">
-    <param name="robot_radius"  value="0.40"/>
-    <param name="safety_margin" value="0.15"/>
-  </node>
+        output="screen" launch-prefix="bash -c 'sleep 10.0; $0 $@'"/>
+
+  <!-- 8) (Опц.) RViz с готовой сценой: комната, препятствия, точки A/B/C,
+          планируемый (зелёный) и фактический (красный) путь, картинка камеры.
+          Включить: rviz:=true -->
+  <include if="$(arg rviz)" file="$(find youbot_controller)/launch/rviz.launch"/>
 
 </launch>

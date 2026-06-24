@@ -41,52 +41,58 @@ from std_msgs.msg import Float32MultiArray, MultiArrayDimension
 from geometry_msgs.msg import Point
 from visualization_msgs.msg import Marker, MarkerArray
 
+from mission_config import cfg_f, cfg_i, cfg_s
+
 
 class RoomGenerator:
     def __init__(self):
         rospy.init_node('room_generator', anonymous=False)
 
         # ---------------------- Параметры комнаты ----------------------------
-        # Размеры комнаты в метрах (n x m). В реальности будут другими -> меняем
-        # только эти параметры.
-        self.room_w = float(rospy.get_param('~room_width', 5.0))   # n, вдоль X
-        self.room_h = float(rospy.get_param('~room_height', 5.0))  # m, вдоль Y
+        # Все значения берутся из ЕДИНОГО config/mission_params.yaml
+        # (namespace /mission_config). Точечно можно переопределить приватным
+        # параметром ноды. Меняйте значения в YAML — код трогать не нужно.
+        self.room_w = cfg_f('room', 'width', 5.0)    # n, вдоль X
+        self.room_h = cfg_f('room', 'height', 5.0)   # m, вдоль Y
         # Левый-нижний угол комнаты в кадре odom (обычно робот стартует в (0,0),
         # поэтому удобно держать парковку рядом с началом координат).
-        self.origin_x = float(rospy.get_param('~origin_x', 0.0))
-        self.origin_y = float(rospy.get_param('~origin_y', 0.0))
+        self.origin_x = cfg_f('room', 'origin_x', 0.0)
+        self.origin_y = cfg_f('room', 'origin_y', 0.0)
 
         # Желаемый размер ячейки сетки (м). Число ячеек считается от размеров
         # комнаты -> сетка автоматически подстраивается под любую комнату.
-        self.cell_size = float(rospy.get_param('~cell_size', 1.0))
+        self.cell_size = cfg_f('room', 'cell_size', 1.0)
 
         # Толщина стенок (м) и высота для визуализации.
-        self.wall_thickness = float(rospy.get_param('~wall_thickness', 0.10))
-        self.wall_height = float(rospy.get_param('~wall_height', 0.5))
+        self.wall_thickness = cfg_f('room', 'wall_thickness', 0.10)
+        self.wall_height = cfg_f('room', 'wall_height', 0.5)
 
         # Радиус робота (м) — берётся для гарантии проходимости. youBot ~0.58x0.38,
-        # берём вписанный радиус с запасом.
-        self.robot_radius = float(rospy.get_param('~robot_radius', 0.35))
+        # берём вписанный радиус с запасом. ЕДИН для всего проекта.
+        self.robot_radius = cfg_f('robot', 'robot_radius', 0.30)
         # Минимальный зазор между препятствиями/стенками и роботом.
-        self.clearance = float(rospy.get_param('~clearance', 0.10))
+        self.clearance = cfg_f('robot', 'clearance', 0.10)
 
-        # Диапазон радиусов виртуальных цилиндров (м).
-        self.obst_r_min = float(rospy.get_param('~obstacle_r_min', 0.15))
-        self.obst_r_max = float(rospy.get_param('~obstacle_r_max', 0.25))
-        # Максимум препятствий на ячейку (0..max). По ТЗ — 2.
-        self.max_per_cell = int(rospy.get_param('~max_obstacles_per_cell', 2))
+        # Радиус виртуальных цилиндров (м). Если min == max — радиус ФИКСИРОВАН.
+        self.obst_r_min = cfg_f('obstacles', 'radius_min', 0.1)
+        self.obst_r_max = cfg_f('obstacles', 'radius_max', 0.1)
+        # Разброс центра цилиндра внутри ячейки (0..1): 0 — строго центр,
+        # 1 — до края ячейки (с учётом зазора).
+        self.spread = max(0.0, min(1.0, cfg_f('obstacles', 'spread', 1.0)))
+        # Максимум препятствий на ячейку (0..max) — «частота появления».
+        self.max_per_cell = cfg_i('obstacles', 'max_per_cell', 2)
 
         # Зерно ГСЧ — ОБЯЗАТЕЛЬНО для воспроизводимости.
-        self.seed = int(rospy.get_param('~seed', 42))
+        self.seed = cfg_i('room', 'seed', 42)
 
         # Кадр координат — тот же, в котором едет робот.
-        self.frame = rospy.get_param('~frame_id', 'odom')
+        self.frame = cfg_s('room', 'frame_id', 'odom')
 
         # Какие ячейки сетки назначить под A, B, C. Если не заданы — выбираются
         # автоматически (углы/центр). Формат параметра: "col,row".
-        self.cell_A = rospy.get_param('~cell_A', '')   # парковка / home
-        self.cell_B = rospy.get_param('~cell_B', '')   # кубик / pick
-        self.cell_C = rospy.get_param('~cell_C', '')   # склад / place
+        self.cell_A = cfg_s('points', 'cell_A', '')   # парковка / home
+        self.cell_B = cfg_s('points', 'cell_B', '')   # кубик / pick
+        self.cell_C = cfg_s('points', 'cell_C', '')   # склад / place
 
         # ------------------------- Издатели ----------------------------------
         self.markers_pub = rospy.Publisher('/room/markers', MarkerArray,
@@ -252,11 +258,16 @@ class RoomGenerator:
                 while len(placed) < k and attempts < 30:
                     attempts += 1
                     r = random.uniform(self.obst_r_min, self.obst_r_max)
+                    fixed_r = abs(self.obst_r_max - self.obst_r_min) < 1e-9
 
                     # Цилиндр целиком внутри ячейки: центр не ближе r+зазор к
                     # границам ячейки, чтобы оставить коридор между ячейками.
                     margin = r + self.clearance
                     if (x1 - x0) <= 2 * margin or (y1 - y0) <= 2 * margin:
+                        if fixed_r:
+                            # Радиус фиксирован (0.1) — НЕ уменьшаем его; если в
+                            # ячейку он не влезает с зазором, просто пропускаем.
+                            continue
                         # Ячейка слишком мала для такого радиуса — уменьшим r.
                         r = max(self.obst_r_min,
                                 min(r, (min(x1 - x0, y1 - y0) / 2.0) - self.clearance))
@@ -264,8 +275,16 @@ class RoomGenerator:
                         if margin <= 0 or (x1 - x0) <= 2 * margin or (y1 - y0) <= 2 * margin:
                             continue
 
-                    cx = random.uniform(x0 + margin, x1 - margin)
-                    cy = random.uniform(y0 + margin, y1 - margin)
+                    # Центр цилиндра внутри ячейки. Допустимый диапазон —
+                    # [x0+margin, x1-margin]. Параметр spread (0..1) сжимает
+                    # этот диапазон к ЦЕНТРУ ячейки: spread=0 — строго центр,
+                    # spread=1 — весь допустимый диапазон (макс. разброс).
+                    cxc = 0.5 * (x0 + x1)
+                    cyc = 0.5 * (y0 + y1)
+                    half_x = max(0.0, (x1 - x0) / 2.0 - margin) * self.spread
+                    half_y = max(0.0, (y1 - y0) / 2.0 - margin) * self.spread
+                    cx = random.uniform(cxc - half_x, cxc + half_x)
+                    cy = random.uniform(cyc - half_y, cyc + half_y)
 
                     # Не сливаться с уже размещёнными в ячейке: между центрами
                     # должно хватать места роботу проехать.

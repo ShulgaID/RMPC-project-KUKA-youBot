@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- ====================================================================
+       RViz с готовой конфигурацией для задачи youBot.
+       Показывает: комнату и препятствия (/room/markers), угловые маркеры
+       поля (/field/markers), ЗАПЛАНИРОВАННЫЙ путь (зелёный,
+       /mission_planned_path), ФАКТИЧЕСКИ пройденный путь (красный,
+       /mission_actual_path), модель робота и debug-изображение камеры
+       (/cube/debug_image). Fixed frame = odom.
+
+       Запуск:  roslaunch youbot_controller rviz.launch
+       ==================================================================== -->
+  <arg name="config" default="$(find youbot_controller)/config/mission_view.rviz"/>
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(arg config)" output="screen"/>
+</launch>

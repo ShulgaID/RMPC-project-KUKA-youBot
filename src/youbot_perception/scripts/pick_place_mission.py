@@ -41,7 +41,7 @@ from geometry_msgs.msg import PoseStamped as _PS
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
-# Подключаем RRT-планировщик из пакета youbot_controller (общий источник).
+# Подключаем RRT-планировщик и центральный конфиг из пакета youbot_controller.
 try:
     from rrt_planner import RRTPlanner
 except Exception:
@@ -52,6 +52,14 @@ except Exception:
         from rrt_planner import RRTPlanner
     except Exception:
         RRTPlanner = None
+
+try:
+    from mission_config import cfg, cfg_f, cfg_i, cfg_s
+except Exception:
+    import rospkg
+    _p = rospkg.RosPack().get_path('youbot_controller')
+    sys.path.append(os.path.join(_p, 'scripts'))
+    from mission_config import cfg, cfg_f, cfg_i, cfg_s
 
 
 # Раскрытие схвата (м, на сторону). limits.urdf.xacro: upper = 0.023/2 = 0.0115.
@@ -84,16 +92,15 @@ class PickPlaceMission:
     def __init__(self):
         rospy.init_node('pick_place_mission', anonymous=False)
 
-        self.rate_hz = rospy.get_param('~rate', 20)
+        self.rate_hz = cfg_i('mission', 'rate', 20)
         self.rate = rospy.Rate(self.rate_hz)
 
         # --- Точки маршрута ---------------------------------------------------
-        self.point_B = tuple(rospy.get_param('/room/point_B',
-                              rospy.get_param('~point_B', [1.0, 1.0])))
-        self.point_C = tuple(rospy.get_param('/room/point_C',
-                              rospy.get_param('~point_C', [4.0, 4.0])))
-        self.point_A = tuple(rospy.get_param('/room/point_A',
-                              rospy.get_param('~point_A', [0.0, 0.0])))
+        # Координаты A/B/C приходят из room_generator (/room/point_*), который
+        # сам берёт их из центрального config/mission_params.yaml.
+        self.point_B = tuple(rospy.get_param('/room/point_B', [1.0, 1.0]))
+        self.point_C = tuple(rospy.get_param('/room/point_C', [4.0, 4.0]))
+        self.point_A = tuple(rospy.get_param('/room/point_A', [0.0, 0.0]))
 
         # --- Позиции трёх картонок в точке C (odom). Формат: [x, y]. ----------
         # По умолчанию раскладываем три картонки рядом с C вдоль оси Y.
@@ -104,15 +111,15 @@ class PickPlaceMission:
             'blue':  tuple(rospy.get_param('~pad_blue',  [cx, cy + 0.5])),
         }
 
-        # Допуски подъезда.
-        self.pos_tol = float(rospy.get_param('~pos_tol', 0.06))
-        self.yaw_tol = float(rospy.get_param('~yaw_tol', 0.10))
-        self.v_max = float(rospy.get_param('~v_max', 0.22))
-        self.w_max = float(rospy.get_param('~w_max', 1.0))
-        # Габаритный радиус робота и запас для объезда. Увеличены, чтобы
-        # корпус НЕ задевал цилиндры (раньше проезжал через коллизию).
-        self.robot_radius = float(rospy.get_param('~robot_radius', 0.40))
-        self.safety_margin = float(rospy.get_param('~safety_margin', 0.15))
+        # Допуски и скорости — из центрального конфига (группа mission).
+        self.pos_tol = cfg_f('mission', 'pos_tol', 0.06)
+        self.yaw_tol = cfg_f('mission', 'yaw_tol', 0.10)
+        self.v_max = cfg_f('mission', 'v_max', 0.22)
+        self.w_max = cfg_f('mission', 'w_max', 1.0)
+        # Габаритный радиус робота и запас для объезда — ЕДИНЫ для всего проекта
+        # (group robot в mission_params.yaml). Вписанный радиус youBot ~0.30 м.
+        self.robot_radius = cfg_f('robot', 'robot_radius', 0.30)
+        self.safety_margin = cfg_f('robot', 'safety_margin', 0.08)
 
         # --- Препятствия и границы из room_generator (для объезда) -----------
         flat = rospy.get_param('/room/obstacles_flat', None)
@@ -139,10 +146,18 @@ class PickPlaceMission:
                                        JointTrajectory, queue_size=10)
         self.grip_pub = rospy.Publisher('/gripper_controller/command',
                                         JointTrajectory, queue_size=10)
-        # Публикуем ИМЕННО тот путь, по которому едем — чтобы в RViz
+        # Публикуем ИМЕННО тот путь, по которому ПЛАНИРУЕМ ехать — чтобы в RViz
         # масштаб/геометрия совпадали с движением в Gazebo (frame=odom).
         self.path_pub = rospy.Publisher('/mission_planned_path', Path,
                                         queue_size=1, latch=True)
+        # ФАКТИЧЕСКИ пройденная траектория (накапливается из /odom). Нужна,
+        # чтобы в RViz сравнить план vs реальность и записать видео сим/реал.
+        self.actual_path_pub = rospy.Publisher('/mission_actual_path', Path,
+                                               queue_size=1, latch=True)
+        self.actual_path = Path()
+        self.actual_path.header.frame_id = 'odom'
+        self._last_trace_xy = None
+        self._trace_min_step = 0.02   # м: добавляем точку следа не чаще, чем раз в 2 см
 
         rospy.loginfo("pick_place_mission: B=%s C=%s pads=%s obstacles=%d",
                       self.point_B, self.point_C, self.pads,
@@ -155,6 +170,26 @@ class PickPlaceMission:
         o = msg.pose.pose.orientation
         _, _, self.yaw = euler_from_quaternion([o.x, o.y, o.z, o.w])
         self.odom_ok = True
+        self._append_trace(self.x, self.y)
+
+    def _append_trace(self, x, y):
+        """Накапливает фактически пройденный путь и публикует его в
+        /mission_actual_path. Точка добавляется не чаще, чем раз в
+        _trace_min_step метров, чтобы не раздувать сообщение."""
+        if self._last_trace_xy is not None:
+            lx, ly = self._last_trace_xy
+            if math.hypot(x - lx, y - ly) < self._trace_min_step:
+                return
+        self._last_trace_xy = (x, y)
+        ps = _PS()
+        ps.header.frame_id = 'odom'
+        ps.header.stamp = rospy.Time.now()
+        ps.pose.position.x = x
+        ps.pose.position.y = y
+        ps.pose.orientation.w = 1.0
+        self.actual_path.poses.append(ps)
+        self.actual_path.header.stamp = ps.header.stamp
+        self.actual_path_pub.publish(self.actual_path)
 
     def color_cb(self, msg):
         self.cube_color = msg.data
@@ -202,36 +237,100 @@ class PickPlaceMission:
     def plan_path(self, gx, gy):
         """Строит безопасный путь от текущей позы до (gx,gy) с объездом
         препятствий (RRT с учётом габарита робота). Возвращает список
-        waypoint'ов. Деградирует к прямой, если RRT неприменим
-        (нет препятствий, цель/старт в раздутом препятствии и т.п.)."""
+        waypoint'ов.
+
+        ИСПРАВЛЕНИЕ БАГА «старт/точка в препятствии, еду напрямую»:
+        Точки A (парковка) и C (склад) стоят В УГЛАХ комнаты, в ~0.5 м от
+        стены. Стенки — тоже препятствия. При инфляции на габарит робота
+        углы НЕИЗБЕЖНО попадают в раздутую зону стены. Раньше код в этом
+        случае сразу возвращал прямую (и RRT никогда не работал у углов).
+
+        Теперь поведение другое:
+          • стартовая/целевая точка, попавшая в раздутую зону, НЕ повод
+            сдаваться — мы «выталкиваем» (snap) её наружу к ближайшей
+            свободной точке и планируем уже от/до неё, добавляя короткий
+            прямой хвостик до исходной точки (он короткий и безопасный,
+            робот физически помещается в углу);
+          • к прямой деградируем ТОЛЬКО когда точка реально недостижима
+            (глубоко внутри настоящего препятствия) или RRT не нашёл путь."""
         start = (self.x, self.y)
         goal = (gx, gy)
         if RRTPlanner is None or not self.obstacles:
             return [start, goal]
 
-        # Если ЦЕЛЬ или СТАРТ попадают в раздутое препятствие (например, точка
-        # у стены, а стенки тоже в списке), RRT гарантированно не найдёт путь.
-        # В этом случае честнее ехать напрямую, чем спамить ошибкой.
         infl = self.robot_radius + self.safety_margin
-        def blocked(p):
+
+        # На сколько точка «утоплена» в самое близкое раздутое препятствие
+        # (>0 — внутри запретной зоны, <=0 — свободно).
+        def penetration(p):
+            worst = -1e9
             for (cx, cy, r) in self.obstacles:
-                if math.hypot(p[0] - cx, p[1] - cy) < r + infl:
-                    return True
-            return False
-        if blocked(goal) or blocked(start):
-            rospy.loginfo_throttle(5.0,
-                "Цель/старт у препятствия — еду к (%.2f,%.2f) напрямую", gx, gy)
+                pen = (r + infl) - math.hypot(p[0] - cx, p[1] - cy)
+                if pen > worst:
+                    worst = pen
+            return worst
+
+        # Вытолкнуть точку наружу из ближайшего раздутого препятствия по
+        # радиальному направлению от его центра. Возвращает (свободная_точка,
+        # достижимо?). Если точка утоплена слишком глубоко в НАСТОЯЩий
+        # (не-стеновой) цилиндр — считаем недостижимой.
+        def snap_out(p):
+            if penetration(p) <= 0.0:
+                return p, True
+            # ближайшее по проникновению препятствие
+            best = None
+            best_pen = -1e9
+            for (cx, cy, r) in self.obstacles:
+                pen = (r + infl) - math.hypot(p[0] - cx, p[1] - cy)
+                if pen > best_pen:
+                    best_pen = pen
+                    best = (cx, cy, r)
+            cx, cy, r = best
+            d = math.hypot(p[0] - cx, p[1] - cy)
+            if d < 1e-6:
+                # точка ровно в центре — толкаем в сторону цели/старта
+                ang = math.atan2(goal[1] - p[1], goal[0] - p[0]) if p != goal \
+                      else 0.0
+                ux, uy = math.cos(ang), math.sin(ang)
+            else:
+                ux, uy = (p[0] - cx) / d, (p[1] - cy) / d
+            target_d = r + infl + 0.02   # чуть наружу от раздутой границы
+            snapped = (cx + ux * target_d, cy + uy * target_d)
+            # держим в границах поля
+            sx = min(max(snapped[0], self.bounds[0]), self.bounds[1])
+            sy = min(max(snapped[1], self.bounds[2]), self.bounds[3])
+            snapped = (sx, sy)
+            # достижимо, если исходная точка не глубоко в реальном цилиндре:
+            # для стен (тонких) проникновение ~равно infl — это норм (угол);
+            # реально непроходимо, только если даже после snap всё ещё внутри.
+            reachable = penetration(snapped) <= 1e-3
+            return snapped, reachable
+
+        start_s, s_ok = snap_out(start)
+        goal_s, g_ok = snap_out(goal)
+        if not s_ok or not g_ok:
+            rospy.logwarn_throttle(5.0,
+                "Старт/цель недостижимы для RRT — еду к (%.2f,%.2f) напрямую",
+                gx, gy)
             return [start, goal]
 
         try:
-            planner = RRTPlanner(start, goal, self.obstacles, self.bounds,
+            planner = RRTPlanner(start_s, goal_s, self.obstacles, self.bounds,
                                  max_iter=6000, step_size=0.25,
                                  robot_radius=self.robot_radius,
                                  goal_bias=0.2, safety_margin=self.safety_margin)
             path = planner.plan()
             if path and len(path) >= 2:
-                return path
-            rospy.loginfo_throttle(5.0,
+                # Пришиваем исходные старт/цель к выдвинутым точкам (короткие
+                # безопасные хвостики в углу).
+                full = []
+                if start_s != start:
+                    full.append(start)
+                full.extend(path)
+                if goal_s != goal:
+                    full.append(goal)
+                return full
+            rospy.logwarn_throttle(5.0,
                 "RRT путь не найден к (%.2f,%.2f) — еду напрямую", gx, gy)
         except Exception as e:
             rospy.logwarn_throttle(5.0, "RRT ошибка: %s — еду напрямую", e)
@@ -395,7 +494,7 @@ class PickPlaceMission:
         #    в СЛЕПУЮ ЗОНУ под камерой. Поэтому база встаёт так, чтобы кубик
         #    был на ~0.73 м (центр кадра).
         bx, by = self.point_B
-        view_dist = float(rospy.get_param('~view_dist', 0.73))
+        view_dist = cfg_f('mission', 'view_dist', 0.73)
 
         # Со стороны какой точки подъезжать к B: от старта (A) — естественно.
         ax0, ay0 = self.point_A
@@ -414,21 +513,50 @@ class PickPlaceMission:
         self.stop_base()
         self.sleep(1.5)  # дать камере успокоиться и распознать
 
-        color = self.wait_for_color(timeout=8.0)
+        # --- ДЕТЕКЦИЯ ЦВЕТА С НЕСКОЛЬКИМИ ПОПЫТКАМИ --------------------------
+        # Раньше: если цвет не определён -> return (вся миссия стопорилась).
+        # Теперь: даём НЕСКОЛЬКО попыток (перевстать к точке осмотра + поиск
+        # поворотом базы), а если все провалились — НЕ останавливаемся, а едем
+        # дальше с запасным цветом (fallback) и доводим миссию до конца.
+        max_attempts = cfg_i('mission', 'color_attempts', 3)
+        color = None
+        for attempt in range(1, max_attempts + 1):
+            rospy.loginfo("Детекция цвета: попытка %d из %d", attempt, max_attempts)
+            color = self.wait_for_color(timeout=8.0)
+            if color is None:
+                # Кубик не виден из точки осмотра — медленно поворачиваемся на
+                # месте, чтобы поймать кубик в кадр камеры (-X базы).
+                rospy.logwarn("Попытка %d: кубик не виден — ищу поворотом базы...",
+                              attempt)
+                color = self.search_for_cube(bx, by)
+            if color is not None:
+                break
+            # Перед следующей попыткой — заново встать на точку осмотра перед B
+            # (если сбились с позиции во время поиска).
+            if attempt < max_attempts:
+                rospy.logwarn("Попытка %d не дала цвет. Перевстаю и пробую снова.",
+                              attempt)
+                self.goto_planned(vx, vy, final_yaw=cam_yaw)
+                self.stop_base()
+                self.sleep(1.5)
+
         if color is None:
-            # Кубик не виден из точки осмотра — медленно поворачиваемся на
-            # месте, чтобы поймать кубик в кадр камеры (-X базы).
-            rospy.logwarn("Кубик не виден — ищу поворотом базы...")
-            color = self.search_for_cube(bx, by)
-        if color is None:
-            rospy.logerr("Миссия прервана: цвет не определён.")
-            return
-        rospy.loginfo("Кубик распознан как %s. Готовлюсь к захвату.", color)
+            # Все попытки исчерпаны — НЕ прерываем миссию. Берём запасной цвет
+            # и едем дальше (поднимем кубик «вслепую» по позиции B и поставим
+            # на картонку запасного цвета). Так процесс не стопорится.
+            color = cfg_s('cube', 'fallback_color', 'red')
+            rospy.logerr("Цвет не определён за %d попыток. "
+                         "Продолжаю с запасным цветом '%s'.", max_attempts, color)
+            self._color_is_fallback = True
+        else:
+            self._color_is_fallback = False
+            rospy.loginfo("Кубик распознан как %s. Готовлюсь к захвату.", color)
 
         # ЗАМОРАЖИВАЕМ позицию кубика, измеренную СЕЙЧАС (камера наведена на
         # кубик в точке осмотра). Дальше используем только это значение —
         # иначе при развороте камера ловит картонки/мусор и цель «прыгает».
-        if self.cube_pose is not None:
+        # В режиме fallback (цвет не определён) надёжной позы нет — берём B.
+        if not getattr(self, '_color_is_fallback', False) and self.cube_pose is not None:
             frozen_cube = (self.cube_pose.pose.position.x,
                            self.cube_pose.pose.position.y)
         else:
@@ -518,7 +646,7 @@ class PickPlaceMission:
         камерой), затем поворачиваем базу в обе стороны, ловя кубик."""
         # 1) перевстать так, чтобы кубик был в центре кадра камеры (-X) на
         #    дистанции view_dist; камера направлена на B.
-        view_dist = float(rospy.get_param('~view_dist', 0.73))
+        view_dist = cfg_f('mission', 'view_dist', 0.73)
         appr = math.atan2(by - self.y, bx - self.x)  # от робота к B
         vx = bx - view_dist * math.cos(appr)
         vy = by - view_dist * math.sin(appr)
@@ -565,8 +693,8 @@ class PickPlaceMission:
           1) встать на БЕЗОПАСНОЙ дистанции (reach + approach_gap) и развернуть
              руку (+X) точно на кубик — корпус ещё далеко от кубика;
           2) аккуратно подъехать вперёд до (reach + extra_standoff), БЕЗ доворота."""
-        reach = float(rospy.get_param('~arm_reach', 0.523))
-        approach_gap = float(rospy.get_param('~approach_gap', 0.25))
+        reach = cfg_f('mission', 'arm_reach', 0.523)
+        approach_gap = cfg_f('mission', 'approach_gap', 0.25)
         # Финальная дистанция базы до кубика = reach + extra_standoff (с запасом).
         stop_dist = reach + extra_standoff
         tx, ty = cube_xy
@@ -606,7 +734,7 @@ class PickPlaceMission:
         удерживая текущий курс. Используется, чтобы с ВЫТЯНУТОЙ рукой подвести
         открытый схват к кубику, не толкая его корпусом."""
         hold_yaw = getattr(self, '_grasp_yaw', self.yaw)
-        v_creep = float(rospy.get_param('~v_creep', 0.05))
+        v_creep = cfg_f('mission', 'v_creep', 0.05)
         sign = 1.0 if dist >= 0 else -1.0
         target = abs(dist)
         x0, y0 = self.x, self.y
@@ -632,7 +760,7 @@ class PickPlaceMission:
         """Медленный прямой подъезд к (gx,gy) с удержанием курса hold_yaw.
         Двигается вперёд по +X базы малой скоростью — чтобы не толкнуть кубик."""
         t0 = rospy.Time.now()
-        v_creep = float(rospy.get_param('~v_creep', 0.06))
+        v_creep = cfg_f('mission', 'v_creep', 0.06)
         while not rospy.is_shutdown():
             if (rospy.Time.now() - t0).to_sec() > timeout:
                 break

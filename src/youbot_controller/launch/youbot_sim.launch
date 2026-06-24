@@ -1,7 +1,0 @@
-<launch>
-    <!-- Запуск симуляции (модифицированный оригинальный launch) -->
-    <include file="$(find youbot_controller)/launch/youbot_my_sim.launch"/>
-
-    <!-- Запуск общей части (управляющий узел) -->
-    <include file="$(find youbot_controller)/launch/youbot_controller_core.launch"/>
-</launch>

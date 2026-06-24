@@ -2,65 +2,19 @@
 <launch>
   <!-- ====================================================================
        room_generator: строит комнату (n x m), сетку, точки A/B/C и
-       виртуальные препятствия. Единственный источник истины о препятствиях.
+       виртуальные препятствия. Единственный источник истины о ПРЕПЯТСТВИЯХ.
 
-       Все размеры параметризованы — на реальном роботе комната будет
-       другого размера, достаточно переопределить аргументы ниже
-       (например: roslaunch ... room_width:=3.0 room_height:=4.0).
+       ВСЕ значения берутся из ЕДИНОГО файла:
+         youbot_perception/config/mission_params.yaml
+       (загружается в namespace /mission_config). Меняйте параметры ТАМ —
+       здесь ничего править не нужно.
        ==================================================================== -->
 
-  <!-- Размеры комнаты (метры). В реальности БУДУТ отличаться. -->
-  <arg name="room_width"  default="5.0"/>   <!-- n, вдоль X -->
-  <arg name="room_height" default="5.0"/>   <!-- m, вдоль Y -->
-  <arg name="origin_x"    default="0.0"/>   <!-- левый-нижний угол комнаты -->
-  <arg name="origin_y"    default="0.0"/>
+  <!-- Загрузить центральный конфиг (если родительский launch ещё не загрузил). -->
+  <rosparam ns="mission_config"
+            command="load"
+            file="$(find youbot_perception)/config/mission_params.yaml"/>
 
-  <!-- Сетка -->
-  <arg name="cell_size"   default="1.0"/>   <!-- желаемый размер ячейки (м) -->
-
-  <!-- Зерно ГСЧ — для воспроизводимости результата -->
-  <arg name="seed"        default="42"/>
-
-  <!-- Геометрия робота и зазоры (гарантия проходимости) -->
-  <arg name="robot_radius" default="0.35"/>
-  <arg name="clearance"    default="0.10"/>
-
-  <!-- Виртуальные препятствия -->
-  <arg name="obstacle_r_min"        default="0.15"/>
-  <arg name="obstacle_r_max"        default="0.25"/>
-  <arg name="max_obstacles_per_cell" default="2"/>
-
-  <!-- Стенки -->
-  <arg name="wall_thickness" default="0.10"/>
-  <arg name="wall_height"    default="0.50"/>
-
-  <!-- Кадр координат (тот же, в котором едет робот) -->
-  <arg name="frame_id" default="odom"/>
-
-  <!-- Ячейки под точки A/B/C в формате "col,row".
-       Пусто => выбираются автоматически (A в углу у (0,0), C в дальнем углу,
-       B в центре). -->
-  <arg name="cell_A" default=""/>   <!-- парковка / home -->
-  <arg name="cell_B" default=""/>   <!-- кубик / pick -->
-  <arg name="cell_C" default=""/>   <!-- склад / place -->
-
-  <node name="room_generator" pkg="youbot_controller" type="room_generator.py" output="screen">
-    <param name="room_width"  value="$(arg room_width)"/>
-    <param name="room_height" value="$(arg room_height)"/>
-    <param name="origin_x"    value="$(arg origin_x)"/>
-    <param name="origin_y"    value="$(arg origin_y)"/>
-    <param name="cell_size"   value="$(arg cell_size)"/>
-    <param name="seed"        value="$(arg seed)"/>
-    <param name="robot_radius" value="$(arg robot_radius)"/>
-    <param name="clearance"    value="$(arg clearance)"/>
-    <param name="obstacle_r_min" value="$(arg obstacle_r_min)"/>
-    <param name="obstacle_r_max" value="$(arg obstacle_r_max)"/>
-    <param name="max_obstacles_per_cell" value="$(arg max_obstacles_per_cell)"/>
-    <param name="wall_thickness" value="$(arg wall_thickness)"/>
-    <param name="wall_height"    value="$(arg wall_height)"/>
-    <param name="frame_id" value="$(arg frame_id)"/>
-    <param name="cell_A" value="$(arg cell_A)"/>
-    <param name="cell_B" value="$(arg cell_B)"/>
-    <param name="cell_C" value="$(arg cell_C)"/>
-  </node>
+  <node name="room_generator" pkg="youbot_controller" type="room_generator.py"
+        output="screen"/>
 </launch>

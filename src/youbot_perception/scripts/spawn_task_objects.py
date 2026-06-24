@@ -19,10 +19,20 @@
 # =============================================================================
 
 import random
+import os
+import sys
 
 import rospy
 from gazebo_msgs.srv import SpawnModel, DeleteModel
 from geometry_msgs.msg import Pose
+
+try:
+    from mission_config import cfg_i, cfg_s
+except Exception:
+    import rospkg
+    _p = rospkg.RosPack().get_path('youbot_controller')
+    sys.path.append(os.path.join(_p, 'scripts'))
+    from mission_config import cfg_i, cfg_s
 
 
 GAZEBO_RGBA = {
@@ -108,11 +118,12 @@ def main():
     point_B = rospy.get_param('/room/point_B', rospy.get_param('~point_B', [1.0, 1.0]))
     point_C = rospy.get_param('/room/point_C', rospy.get_param('~point_C', [4.0, 4.0]))
 
-    seed = rospy.get_param('~seed', None)
+    # seed и цвет кубика — из ЕДИНОГО config/mission_params.yaml.
+    seed = cfg_i('room', 'seed', None)
     if seed is not None:
         random.seed(int(seed))
 
-    forced = rospy.get_param('~cube_color', '')
+    forced = cfg_s('cube', 'color', '')
     if forced in GAZEBO_RGBA:
         cube_color = forced
     else:

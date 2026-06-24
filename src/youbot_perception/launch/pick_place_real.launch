@@ -1,23 +1,24 @@
 <?xml version="1.0"?>
 <!-- =========================================================================
-     pick_place_real.launch  (Редакция 3 — USB-вебкамера)
+     pick_place_real.launch  (Редакция 4 — единый конфиг, USB-вебкамера)
      =========================================================================
      Запуск ТОЙ ЖЕ задачи на реальном youBot с USB-вебкамерой (FIFINE K420).
      Отличия от симуляции:
        - нет Gazebo и нет spawn_task_objects (объекты реальные);
        - база/рука/схват — драйвер youbot_driver_ros_interface;
        - камера — обычная 2D USB-вебкамера через пакет usb_cam (БЕЗ глубины).
-         Позиция кубика оценивается проекцией пикселя на плоскость пола, как
-         и в симуляции. АЛГОРИТМ детекции и сама миссия — БЕЗ ИЗМЕНЕНИЙ.
 
-     Перед запуском:
-       - откалибруйте камеру и подайте корректный /usb_cam/camera_info
-         (иначе позиция кубика будет неточной);
-       - задайте TF от кадра камеры usb_cam_optical_frame до odom/base_footprint
-         (через static_transform_publisher с реальными смещениями крепления);
+     ВСЕ важные параметры задачи — в ОДНОМ файле:
+         youbot_perception/config/mission_params.yaml
+
+     Перед запуском (реальный робот):
+       - решите проблему EtherCAT по docs/ETHERCAT_TROUBLESHOOTING.md
+         (имя интерфейса в config/youbot-ethercat.cfg, setcap на бинарь);
+       - откалибруйте камеру (/usb_cam/camera_info);
+       - задайте TF от кадра камеры до base_link под реальное крепление;
        - подгоните HSV-пороги в cube_detector под освещение.
 
-     Запуск (пример video device /dev/video0):
+     Запуск:
        roslaunch youbot_perception pick_place_real.launch video_device:=/dev/video0
      ========================================================================= -->
 <launch>
@@ -25,6 +26,28 @@
   <arg name="img_width"    default="1280"/>
   <arg name="img_height"   default="720"/>
   <arg name="target_frame" default="odom"/>
+
+  <!-- ====================================================================
+       ПЕРЕОПРЕДЕЛЕНИЕ ПАРАМЕТРОВ КОМНАТЫ ИЗ КОМАНДНОЙ СТРОКИ (необязательно).
+       Задайте под РЕАЛЬНОЕ пространство. Пусто => из mission_params.yaml.
+         roslaunch ... pick_place_real.launch room_width:=3.0 room_height:=2.5 \
+                       cell_size:=0.5 cell_A:=0,0 cell_B:=2,4 cell_C:=5,4 \
+                       use_room_generator:=true
+       ==================================================================== -->
+  <arg name="room_width"  default=""/>
+  <arg name="room_height" default=""/>
+  <arg name="cell_size"   default=""/>
+  <arg name="cell_A"      default=""/>
+  <arg name="cell_B"      default=""/>
+  <arg name="cell_C"      default=""/>
+  <arg name="seed"        default=""/>
+  <!-- Запускать ли room_generator на реальном роботе (точки/препятствия). -->
+  <arg name="use_room_generator" default="false"/>
+
+  <!-- ЕДИНЫЙ конфиг задачи -> namespace /mission_config (виден всем нодам). -->
+  <rosparam ns="mission_config"
+            command="load"
+            file="$(find youbot_perception)/config/mission_params.yaml"/>
 
   <!-- Драйвер реального робота (база + рука + схват + /odom) -->
   <include file="$(find youbot_driver_ros_interface)/launch/youbot_driver.launch"/>
@@ -42,13 +65,24 @@
   </node>
 
   <!-- TF крепления камеры. ПОДГОНИТЕ под реальную установку!
-       Аргументы: x y z yaw pitch roll parent child.
-       Камера спереди ПО ЦЕНТРУ (y=0), на стойке ~45 см от пола.
-       base_link выше пола на ~0.14 м => z ≈ 0.31. Смотрит вперёд (-X, yaw=pi)
-       и вниз на пол (pitch=0.7 ≈ 40°). Рука манипулятора — с другой стороны. -->
+       Аргументы: x y z yaw pitch roll parent child. -->
   <node name="usb_cam_tf" pkg="tf2_ros" type="static_transform_publisher"
         args="-0.20 0.0 0.31 3.14159 0.7 0.0 base_link usb_cam_optical_frame"/>
 
+  <!-- (Опционально) комната/точки/препятствия на реальной сцене.
+       Включается аргументом use_room_generator:=true. Размер комнаты и
+       ячейки задаются аргументами выше (под реальное пространство). -->
+  <node if="$(arg use_room_generator)"
+        name="room_generator" pkg="youbot_controller" type="room_generator.py"
+        output="screen">
+    <param name="width"     value="$(arg room_width)"/>
+    <param name="height"    value="$(arg room_height)"/>
+    <param name="cell_size" value="$(arg cell_size)"/>
+    <param name="cell_A"    value="$(arg cell_A)"/>
+    <param name="cell_B"    value="$(arg cell_B)"/>
+    <param name="cell_C"    value="$(arg cell_C)"/>
+    <param name="seed"      value="$(arg seed)"/>
+  </node>
   <!-- Детекция по USB-камере -->
   <node name="cube_detector" pkg="youbot_perception" type="cube_detector.py" output="screen">
     <param name="image_topic"  value="/usb_cam/image_raw"/>
@@ -56,19 +90,15 @@
     <param name="target_frame" value="$(arg target_frame)"/>
     <param name="floor_z"      value="0.0"/>
     <param name="cube_top_z"   value="0.025"/>
-    <!-- Чёрные угловые маркеры границ рабочей зоны (см. методичку, Раздел B). -->
+    <!-- Чёрные угловые маркеры границ рабочей зоны. -->
     <param name="detect_markers"     value="true"/>
     <param name="marker_min_area_px" value="400"/>
     <param name="black_v_max"        value="60"/>
     <param name="black_s_max"        value="90"/>
   </node>
 
-  <!-- Миссия. Точки B/C/картонки задайте параметрами под реальную сцену
-       (или через room_generator). -->
+  <!-- Миссия. Все параметры — из /mission_config. -->
   <node name="pick_place_mission" pkg="youbot_perception" type="pick_place_mission.py"
-        output="screen">
-    <param name="robot_radius"  value="0.40"/>
-    <param name="safety_margin" value="0.15"/>
-  </node>
+        output="screen"/>
 
 </launch>

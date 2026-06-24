@@ -1,0 +1,159 @@
+Panels:
+  - Class: rviz/Displays
+    Help Height: 70
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /MissionPlannedPath1
+        - /MissionActualPath1
+      Splitter Ratio: 0.5
+    Tree Height: 600
+  - Class: rviz/Views
+    Expanded:
+      - /Current View1
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.5
+      Cell Size: 1
+      Class: rviz/Grid
+      Color: 160; 160; 164
+      Enabled: true
+      Line Style:
+        Line Width: 0.03
+        Value: Lines
+      Name: Grid
+      Normal Cell Count: 0
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Plane: XY
+      Plane Cell Count: 10
+      Reference Frame: odom
+      Value: true
+    - Class: rviz/TF
+      Enabled: true
+      Frame Timeout: 15
+      Marker Scale: 0.4
+      Name: TF
+      Show Arrows: true
+      Show Axes: true
+      Show Names: true
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /room/markers
+      Name: RoomMarkers
+      Namespaces:
+        {}
+      Queue Size: 100
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /field/markers
+      Name: FieldCorners
+      Namespaces:
+        {}
+      Queue Size: 100
+      Value: true
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz/Path
+      Color: 25; 200; 25
+      Enabled: true
+      Head Diameter: 0.1
+      Head Length: 0.1
+      Length: 0.3
+      Line Style: Lines
+      Line Width: 0.04
+      Name: MissionPlannedPath
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 25; 200; 25
+      Pose Style: None
+      Radius: 0.03
+      Shaft Diameter: 0.05
+      Shaft Length: 0.05
+      Topic: /mission_planned_path
+      Unreliable: false
+      Value: true
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz/Path
+      Color: 230; 30; 30
+      Enabled: true
+      Head Diameter: 0.1
+      Head Length: 0.1
+      Length: 0.3
+      Line Style: Lines
+      Line Width: 0.05
+      Name: MissionActualPath
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 230; 30; 30
+      Pose Style: None
+      Radius: 0.03
+      Shaft Diameter: 0.05
+      Shaft Length: 0.05
+      Topic: /mission_actual_path
+      Unreliable: false
+      Value: true
+    - Class: rviz/RobotModel
+      Enabled: true
+      Name: RobotModel
+      Robot Description: robot_description
+      TF Prefix: ""
+      Value: true
+      Visual Enabled: true
+    - Class: rviz/Image
+      Enabled: true
+      Image Topic: /cube/debug_image
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: CubeDebugImage
+      Normalize Range: true
+      Queue Size: 2
+      Transport Hint: raw
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Default Light: true
+    Fixed Frame: odom
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz/Interact
+      Hide Inactive Objects: true
+    - Class: rviz/MoveCamera
+    - Class: rviz/Select
+    - Class: rviz/FocusCamera
+    - Class: rviz/Measure
+  Value: true
+  Views:
+    Current:
+      Class: rviz/Orbit
+      Distance: 9
+      Focal Point:
+        X: 2.5
+        Y: 2.5
+        Z: 0
+      Name: Current View
+      Near Clip Distance: 0.01
+      Pitch: 1.2
+      Target Frame: odom
+      Yaw: 0.785
+    Saved: ~
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 900
+  Width: 1500

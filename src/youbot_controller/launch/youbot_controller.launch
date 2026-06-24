@@ -1,7 +1,0 @@
-<launch>
-    <!-- Запуск драйвера реального робота -->
-    <include file="$(find youbot_driver_ros_interface)/launch/youbot_driver.launch"/>
-
-    <!-- Запуск общей части -->
-    <include file="$(find youbot_controller)/launch/youbot_controller_core.launch"/>
-</launch>
