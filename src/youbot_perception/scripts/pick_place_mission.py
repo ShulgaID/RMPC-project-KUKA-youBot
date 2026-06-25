@@ -39,6 +39,10 @@ from nav_msgs.msg import Odometry, Path
 from std_msgs.msg import String
 from geometry_msgs.msg import PoseStamped as _PS
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+# Драйвер youBot (youbot_driver_ros_interface) принимает команды руки/схвата
+# как brics_actuator/JointPositions в топиках /arm_1/arm_controller/position_command
+# и /arm_1/gripper_controller/position_command (НЕ JointTrajectory!).
+from brics_actuator.msg import JointPositions, JointValue
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 
 # Подключаем RRT-планировщик и центральный конфиг из пакета youbot_controller.
@@ -81,12 +85,16 @@ GRIPPER_CLOSED = 0.0      # сжать до конца (кубик крупны�
 # мягких лимитов URDF (j1<5.899, j2<2.705, j4<3.578).
 # =============================================================================
 ARM_HOME = [0.0, 0.0, -0.05, 0.0, 0.0]
-ARM_PREGRASP = [2.95, 2.95, 2.95, -2.95, -2.95]   # вперёд, ~0.075 м над полом, схват открыт
-ARM_GRASP = [2.95, -2.45, -2.45, -2.95, -2.95]      # кончик на кубике (пол)
-ARM_LIFT = [2.95, 0.25, -1.95, 1.75, 2.95]       # плечо поднято, кубик поднят ~0.39 м
-ARM_PREPLACE = [2.95, 0.45, -2.35, 1.85, 2.95]   # над картонкой (как PREGRASP)
-ARM_PLACE = [2.95, 0.75, -2.45, 1.95, 2.95]     # кончик чуть выше пола (картонка)
-
+#ARM_PREGRASP = [0.0, -2.45, -2.45, -2.95, -2.95]   # вперёд, ~0.075 м над полом, схват открыт
+ARM_PREGRASP = [0, 2.7, -2.5, 1.76, 2.72] 
+#ARM_GRASP = [0.0, -2.95, -2.95, -2.95, -2.95]      # кончик на кубике (пол)
+ARM_GRASP = [0, 2.6, -2.25, 3.26, 2.72] 
+#ARM_LIFT = [2.95, 0.25, -1.95, 1.75, 2.95]       # плечо поднято, кубик поднят ~0.39 м
+ARM_LIFT = [0, 2.7, -2.5, 1.76, 2.72] 
+#ARM_PREPLACE = [2.95, 0.45, -2.35, 1.85, 2.95]   # над картонкой (как PREGRASP)
+ARM_PREPLACE = [0, 2.7, -2.5, 1.76, 2.72] 
+#ARM_PLACE = [2.95, 0.75, -2.45, 1.95, 2.95]     # кончик чуть выше пола (картонка)
+ARM_PLACE = [0, 2.6, -2.25, 3.26, 2.72] 
 
 class PickPlaceMission:
     def __init__(self):
@@ -98,6 +106,14 @@ class PickPlaceMission:
         # --- Точки маршрута ---------------------------------------------------
         # Координаты A/B/C приходят из room_generator (/room/point_*), который
         # сам берёт их из центрального config/mission_params.yaml.
+        #
+        # ВАЖНО (гонка инициализации): room_generator и pick_place_mission
+        # стартуют одновременно. Если прочитать /room/point_* сразу, генератор
+        # может ещё НЕ успеть их записать -> возьмутся дефолты B=(1,1) C=(4,4),
+        # и робот поедет не туда (точка осмотра ~0.48). Поэтому ЖДЁМ, пока
+        # room_generator опубликует параметры, прежде чем читать.
+        self._wait_for_room_params(timeout=15.0)
+
         self.point_B = tuple(rospy.get_param('/room/point_B', [1.0, 1.0]))
         self.point_C = tuple(rospy.get_param('/room/point_C', [4.0, 4.0]))
         self.point_A = tuple(rospy.get_param('/room/point_A', [0.0, 0.0]))
@@ -137,15 +153,11 @@ class PickPlaceMission:
         self.cube_color = None
         self.cube_pose = None     # PoseStamped в odom
 
-        rospy.Subscriber('/odom', Odometry, self.odom_cb)
-        rospy.Subscriber('/cube/color', String, self.color_cb)
-        rospy.Subscriber('/cube/pose', PoseStamped, self.pose_cb)
-
         self.cmd_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
-        self.arm_pub = rospy.Publisher('/arm_controller/command',
-                                       JointTrajectory, queue_size=10)
-        self.grip_pub = rospy.Publisher('/gripper_controller/command',
-                                        JointTrajectory, queue_size=10)
+        self.arm_pub = rospy.Publisher('/arm_1/arm_controller/position_command',
+                                       JointPositions, queue_size=10)
+        self.grip_pub = rospy.Publisher('/arm_1/gripper_controller/position_command',
+                                        JointPositions, queue_size=10)
         # Публикуем ИМЕННО тот путь, по которому ПЛАНИРУЕМ ехать — чтобы в RViz
         # масштаб/геометрия совпадали с движением в Gazebo (frame=odom).
         self.path_pub = rospy.Publisher('/mission_planned_path', Path,
@@ -159,9 +171,37 @@ class PickPlaceMission:
         self._last_trace_xy = None
         self._trace_min_step = 0.02   # м: добавляем точку следа не чаще, чем раз в 2 см
 
+        rospy.Subscriber('/odom', Odometry, self.odom_cb)
+        rospy.Subscriber('/cube/color', String, self.color_cb)
+        rospy.Subscriber('/cube/pose', PoseStamped, self.pose_cb)
+
         rospy.loginfo("pick_place_mission: B=%s C=%s pads=%s obstacles=%d",
                       self.point_B, self.point_C, self.pads,
                       len(self.obstacles))
+
+    # ===================== init helpers =====================================
+    def _wait_for_room_params(self, timeout=15.0):
+        """Ждёт, пока room_generator опубликует /room/point_B (признак того,
+        что точки A/B/C и препятствия уже записаны в Param Server). Без этого
+        ожидания возникает ГОНКА: миссия читает точки раньше генератора и
+        берёт дефолты B=(1,1) C=(4,4) -> едет не туда.
+
+        Если параметр не появился за timeout (например, room_generator не
+        запущен — use_room_generator:=false), просто продолжаем на дефолтах,
+        предупредив в лог."""
+        t0 = rospy.Time.now()
+        r = rospy.Rate(10)
+        while not rospy.is_shutdown():
+            if rospy.has_param('/room/point_B'):
+                rospy.loginfo("room_generator готов: точки получены.")
+                return True
+            if (rospy.Time.now() - t0).to_sec() > timeout:
+                rospy.logwarn("Точки /room/point_* не появились за %.0f c — "
+                              "room_generator не запущен? Использую дефолты.",
+                              timeout)
+                return False
+            r.sleep()
+        return False
 
     # ===================== callbacks ========================================
     def odom_cb(self, msg):
@@ -202,22 +242,32 @@ class PickPlaceMission:
         self.cmd_pub.publish(Twist())
 
     def send_arm(self, angles, t=2.0):
-        msg = JointTrajectory()
-        msg.joint_names = ['arm_joint_1', 'arm_joint_2', 'arm_joint_3',
-                           'arm_joint_4', 'arm_joint_5']
-        p = JointTrajectoryPoint()
-        p.positions = list(angles)
-        p.time_from_start = rospy.Duration(t)
-        msg.points.append(p)
+        # brics_actuator/JointPositions: список JointValue (joint_uri, unit, value).
+        # Для руки youBot единица — радианы ('rad'), uri — arm_joint_1..5.
+        msg = JointPositions()
+        names = ['arm_joint_1', 'arm_joint_2', 'arm_joint_3',
+                 'arm_joint_4', 'arm_joint_5']
+        now = rospy.Time.now()
+        for name, ang in zip(names, angles):
+            jv = JointValue()
+            jv.timeStamp = now
+            jv.joint_uri = name
+            jv.unit = 'rad'
+            jv.value = float(ang)
+            msg.positions.append(jv)
         self.arm_pub.publish(msg)
 
     def send_gripper(self, opening, t=1.0):
-        msg = JointTrajectory()
-        msg.joint_names = ['gripper_finger_joint_l', 'gripper_finger_joint_r']
-        p = JointTrajectoryPoint()
-        p.positions = [opening, opening]
-        p.time_from_start = rospy.Duration(t)
-        msg.points.append(p)
+        # Схват: единица — метры ('m'), uri — gripper_finger_joint_l/r.
+        msg = JointPositions()
+        now = rospy.Time.now()
+        for name in ['gripper_finger_joint_l', 'gripper_finger_joint_r']:
+            jv = JointValue()
+            jv.timeStamp = now
+            jv.joint_uri = name
+            jv.unit = 'm'
+            jv.value = float(opening)
+            msg.positions.append(jv)
         self.grip_pub.publish(msg)
 
     def move_arm_blocking(self, angles, settle=10):

@@ -41,19 +41,34 @@
   <arg name="cell_B"      default=""/>
   <arg name="cell_C"      default=""/>
   <arg name="seed"        default=""/>
-  <!-- Запускать ли room_generator на реальном роботе (точки/препятствия). -->
-  <arg name="use_room_generator" default="false"/>
+  <!-- Запускать ли room_generator на реальном роботе (точки/препятствия).
+       ВКЛЮЧЕНО по умолчанию: иначе /room/point_* не задаются и миссия
+       берёт жёсткие дефолты B=(1,1) C=(4,4), игнорируя mission_params.yaml. -->
+  <arg name="use_room_generator" default="true"/>
 
   <!-- ЕДИНЫЙ конфиг задачи -> namespace /mission_config (виден всем нодам). -->
   <rosparam ns="mission_config"
             command="load"
             file="$(find youbot_perception)/config/mission_params.yaml"/>
 
-  <!-- Драйвер реального робота (база + рука + схват + /odom) -->
-  <include file="$(find youbot_driver_ros_interface)/launch/youbot_driver.launch"/>
+  <!-- Драйвер youbot (база + рука + схват + /odom) запускать ИЗ launch?
+       EtherCAT-драйвер работает ТОЛЬКО на роботе (NUC, Kinetic). Этот launch
+       идёт с ноутбука -> драйвер тут не поднимется (нет EtherCAT, нет .cfg).
+       Поэтому по умолчанию ВЫКЛ: драйвер запускаем ОТДЕЛЬНО на роботе. -->
+  <arg name="launch_driver" default="false"/>
+  <include if="$(arg launch_driver)"
+           file="$(find youbot_driver_ros_interface)/launch/youbot_driver.launch"/>
 
-  <!-- USB-вебкамера через пакет usb_cam (sudo apt install ros-noetic-usb-cam) -->
-  <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" output="screen">
+  <!-- usb_cam запускать ИЗ ЭТОГО launch? На реальном стенде камера воткнута
+       в NUC робота (ROS Kinetic), а этот launch идёт с ноутбука (Noetic), где
+       /dev/video0 НЕТ -> usb_cam падает. Поэтому по умолчанию ВЫКЛ: камеру
+       запускаем ОТДЕЛЬНОЙ командой на роботе (см. ниже), а cube_detector с
+       ноутбука подписывается на /usb_cam/image_raw через общий мастер. -->
+  <arg name="launch_camera" default="false"/>
+
+  <!-- USB-вебкамера через пакет usb_cam (только если launch_camera:=true) -->
+  <node if="$(arg launch_camera)"
+        name="usb_cam" pkg="usb_cam" type="usb_cam_node" output="screen">
     <param name="video_device" value="$(arg video_device)"/>
     <param name="image_width"  value="$(arg img_width)"/>
     <param name="image_height" value="$(arg img_height)"/>
@@ -83,22 +98,28 @@
     <param name="cell_C"    value="$(arg cell_C)"/>
     <param name="seed"      value="$(arg seed)"/>
   </node>
-  <!-- Детекция по USB-камере -->
+  <!-- Детекция по USB-камере.
+       ВНИМАНИЕ: detect_markers ВЫКЛ — при ручном запуске детектор видел
+       кубик именно с markers:=false. Поиск чёрных маркеров включайте
+       только когда реально расставлены угловые маркеры рабочей зоны. -->
   <node name="cube_detector" pkg="youbot_perception" type="cube_detector.py" output="screen">
     <param name="image_topic"  value="/usb_cam/image_raw"/>
     <param name="info_topic"   value="/usb_cam/camera_info"/>
     <param name="target_frame" value="$(arg target_frame)"/>
     <param name="floor_z"      value="0.0"/>
     <param name="cube_top_z"   value="0.025"/>
-    <!-- Чёрные угловые маркеры границ рабочей зоны. -->
-    <param name="detect_markers"     value="true"/>
+    <param name="detect_markers"     value="false"/>
     <param name="marker_min_area_px" value="400"/>
     <param name="black_v_max"        value="60"/>
     <param name="black_s_max"        value="90"/>
   </node>
 
-  <!-- Миссия. Все параметры — из /mission_config. -->
+  <!-- Миссия. Все параметры — из /mission_config.
+       launch-prefix задерживает старт миссии на 3 с, чтобы room_generator
+       успел опубликовать /room/point_*, а cube_detector — подняться и начать
+       публиковать /cube/color. Иначе миссия может стартовать раньше и уйти
+       в fallback. (Миссия дополнительно ждёт /room/point_B внутри кода.) -->
   <node name="pick_place_mission" pkg="youbot_perception" type="pick_place_mission.py"
-        output="screen"/>
+        output="screen" launch-prefix="bash -c 'sleep 3; $0 $@'"/>
 
 </launch>

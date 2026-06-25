@@ -78,7 +78,15 @@ class CubeDetector:
         # Макс. площадь пятна кубика (пикс). Больше — это картонка-пластина,
         # отбрасываем. 0 = без ограничения. Для кубика 5 см на дистанции
         # ~0.5–0.8 м разумно ~6000–12000; пластины 25 см дают в разы больше.
-        self.cube_max_area = int(rospy.get_param('~cube_max_area_px', 12000))
+        self.cube_max_area = int(rospy.get_param('~cube_max_area_px', 40000))
+
+        # --- фильтр ФОРМЫ пятна кубика ---
+        # Кубик может стоять ВЕРТИКАЛЬНО и в кадре выглядеть как прямоугольник
+        # выше своей ширины (ar = w/h может быть ~0.5). Поэтому нижнюю границу
+        # ar делаем мягче. Диапазон ar и мин. extent — параметры.
+        self.cube_ar_min = float(rospy.get_param('~cube_ar_min', 0.35))
+        self.cube_ar_max = float(rospy.get_param('~cube_ar_max', 2.2))
+        self.cube_extent_min = float(rospy.get_param('~cube_extent_min', 0.55))
 
         # --- параметры детекции чёрных угловых маркеров ---
         self.detect_markers = bool(rospy.get_param('~detect_markers', True))
@@ -187,8 +195,10 @@ class CubeDetector:
                     continue
                 ar = w / float(h)
                 extent = area / float(w * h)        # заполненность bbox
-                # кубик: близок к квадрату и хорошо заполняет bbox
-                if not (0.6 <= ar <= 1.7 and extent >= 0.6):
+                # кубик: допускаем вытянутый по высоте прямоугольник (стоит
+                # вертикально), но требуем хорошую заполненность bbox.
+                if not (self.cube_ar_min <= ar <= self.cube_ar_max
+                        and extent >= self.cube_extent_min):
                     continue
                 M = cv2.moments(c)
                 if M['m00'] == 0:
